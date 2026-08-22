@@ -1,0 +1,26 @@
+{
+  "name": "ai-agent-practice",
+  "version": "1.0.0",
+  "description": "AI Agent practice project - Phase 4A: Supabase Foundation",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js",
+    "test:local": "node test.js local",
+    "test:api": "node test.js api",
+    "test:supabase": "node supabase.js"
+  },
+  "keywords": [
+    "ai",
+    "gemini",
+    "chatbot"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^2.18.0",
+    "@supabase/supabase-js": "^2.112.3",
+    "dotenv": "^17.4.2"
+  }
+}
