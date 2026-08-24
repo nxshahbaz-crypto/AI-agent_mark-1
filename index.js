@@ -6,6 +6,7 @@ import {
   MAX_RETRIES, BASE_DELAY_MS, MAX_DELAY_MS,
 } from "./config.js";
 import { toolDeclarations, executeTool } from "./tools.js";
+import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
 
 // ─── Configuration ───────────────────────────────────────────────
 const API_KEY = process.env.GEMINI_API_KEY;
@@ -20,8 +21,12 @@ if (!API_KEY || API_KEY === "your_api_key_here") {
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 // ─── Conversation Memory ─────────────────────────────────────────
-// Stores full history; only the last MAX_TURNS are sent to Gemini
+// In-memory history for the current session; also persisted to Supabase.
+// Only the last MAX_TURNS are sent to Gemini.
 const conversationHistory = [];
+
+// Active Supabase conversation ID (set during startup)
+let activeConversationId = null;
 
 // ─── Exponential Backoff ─────────────────────────────────────────
 // Wraps chat.sendMessage with retry logic for HTTP 429 rate limits.
@@ -76,14 +81,49 @@ async function handleToolCalls(chat, response) {
   return response;
 }
 
+// ─── Persistence Helper ─────────────────────────────────────────
+// Saves a message to Supabase without blocking the chat loop.
+// Errors are logged but never crash the agent.
+function persistMessage(role, content) {
+  if (!activeConversationId) return;
+
+  saveMessage(activeConversationId, role, content).catch((err) => {
+    console.error(`  ⚠️  Failed to persist ${role} message: ${err.message}`);
+  });
+}
+
 // ─── Main Chat Loop ─────────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🤖  Atlas AI  —  Phase 3 (Tools)      ║");
+  console.log("║   🤖  Atlas AI  —  Phase 4B (Memory)    ║");
   console.log("║   Type your message and press Enter.     ║");
   console.log("║   Type 'exit' to quit.                   ║");
   console.log("╚══════════════════════════════════════════╝");
   console.log();
+
+  // ── Initialize Supabase conversation ──
+  try {
+    const conversation = await createConversation();
+    activeConversationId = conversation.id;
+    console.log(`💾 Conversation saved: ${conversation.title}`);
+    console.log(`   ID: ${activeConversationId}\n`);
+
+    // Optionally load recent messages from previous sessions
+    // (useful if resuming — for now we start fresh each session)
+    const recentFromDb = await getRecentMessages(activeConversationId, MAX_TURNS * 2);
+    if (recentFromDb.length > 0) {
+      for (const msg of recentFromDb) {
+        conversationHistory.push({
+          role: msg.role,
+          parts: [{ text: msg.content }],
+        });
+      }
+      console.log(`📜 Loaded ${recentFromDb.length} messages from database.\n`);
+    }
+  } catch (err) {
+    console.warn(`⚠️  Supabase persistence unavailable: ${err.message}`);
+    console.warn("   Continuing with in-memory history only.\n");
+  }
 
   while (true) {
     const userInput = await ask("You: ");
@@ -123,11 +163,15 @@ async function main() {
 
       const replyText = response.text;
 
-      // Append both user and model messages to history (no duplicates)
+      // Append both user and model messages to in-memory history (no duplicates)
       conversationHistory.push(
         { role: "user", parts: [{ text: userInput }] },
         { role: "model", parts: [{ text: replyText }] }
       );
+
+      // Persist both messages to Supabase (non-blocking)
+      persistMessage("user", userInput);
+      persistMessage("model", replyText);
 
       console.log(`\nAtlas: ${replyText}\n`);
     } catch (error) {

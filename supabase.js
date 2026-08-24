@@ -59,6 +59,89 @@ export async function testConnection() {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════
+// Phase 4B — Persistent Conversation Memory
+// ═════════════════════════════════════════════════════════════════
+
+// ─── createConversation() ────────────────────────────────────────
+// Creates a new conversation row and returns the full record.
+// Optionally accepts a title (defaults to timestamp-based title).
+export async function createConversation(title) {
+  const conversationTitle = title || `Session ${new Date().toLocaleString()}`;
+
+  const { data, error } = await supabase
+    .from("conversations")
+    .insert({ title: conversationTitle })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create conversation: ${error.message}`);
+  }
+
+  return data;
+}
+
+// ─── saveMessage() ───────────────────────────────────────────────
+// Inserts a single message into the messages table.
+// role must be 'user' or 'model'.
+// Also touches the parent conversation's updated_at timestamp.
+export async function saveMessage(conversationId, role, content) {
+  if (!conversationId || !role || !content) {
+    throw new Error("saveMessage requires conversationId, role, and content.");
+  }
+
+  const { data, error } = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      role,
+      content,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to save message: ${error.message}`);
+  }
+
+  // Update the conversation's updated_at timestamp (fire-and-forget)
+  supabase
+    .from("conversations")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", conversationId)
+    .then(); // intentionally not awaited — non-critical
+
+  return data;
+}
+
+// ─── getRecentMessages() ─────────────────────────────────────────
+// Retrieves the N most recent messages for a conversation,
+// ordered oldest-first (ascending) so they can be fed into history.
+// Default limit: 20 messages (10 turns).
+export async function getRecentMessages(conversationId, limit = 20) {
+  if (!conversationId) {
+    throw new Error("getRecentMessages requires a conversationId.");
+  }
+
+  // Sub-query approach: get the N newest rows, then re-sort ascending.
+  // Supabase doesn't support nested ORDER BY, so we fetch descending
+  // and reverse in JS for correct chronological order.
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id, role, content, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to retrieve messages: ${error.message}`);
+  }
+
+  // Reverse to chronological order (oldest first)
+  return (data || []).reverse();
+}
+
 // ─── Run as standalone script ────────────────────────────────────
 // Allows: node supabase.js
 const isMain = process.argv[1]?.endsWith("supabase.js");

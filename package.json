@@ -1,7 +1,7 @@
 {
   "name": "ai-agent-practice",
   "version": "1.0.0",
-  "description": "AI Agent practice project - Phase 4A: Supabase Foundation",
+  "description": "AI Agent practice project - Phase 4B: Persistent Memory",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "test": "node test.js",
     "test:local": "node test.js local",
     "test:api": "node test.js api",
-    "test:supabase": "node supabase.js"
+    "test:supabase": "node supabase.js",
+    "test:supabase-memory": "node test-supabase-memory.js"
   },
   "keywords": [
     "ai",

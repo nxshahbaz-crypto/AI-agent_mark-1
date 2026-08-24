@@ -1,6 +1,6 @@
 # AI Agent Practice — Atlas AI
 
-A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, and database integration—without relying on heavy agent frameworks.
+A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, persistent memory, and database integration—without relying on heavy agent frameworks.
 
 ---
 
@@ -11,7 +11,8 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 2. **Context & Memory Management:** Implements sliding-window conversation history to maintain multi-turn context while keeping token consumption optimized.
 3. **Autonomous Function/Tool Calling:** Exposes local functions (`calculator`, `current_time`, `get_weather`) directly to Gemini via schema declarations, letting the LLM decide when and how to invoke tools.
 4. **Resilience & Rate-Limit Hardening:** Employs exponential backoff retries for API rate limits (`HTTP 429`) and sanitizes all errors so API keys and secrets are never leaked.
-5. **Database Integration Layer:** Integrates Supabase as the foundation for future persistent chat history and agent memory.
+5. **Database Integration Layer:** Integrates Supabase as the foundation for persistent chat history and agent memory.
+6. **Persistent Conversation Memory:** Saves every conversation and message to Supabase, enabling cross-session history retrieval with configurable limits.
 
 ---
 
@@ -26,6 +27,12 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 - **Rate-Limit Protection & Exponential Backoff:** Automatically retries API calls on `429` status codes with increasing backoff delays (2s → 4s → 8s up to 30s).
 - **Decoupled Local Testing Mode:** Suite of local tool unit tests that run with **zero API calls**, protecting your Gemini quota.
 - **Supabase Foundation:** Verified client module with environment variable validation and health-check probe capabilities.
+- **Persistent Conversation Memory (Phase 4B):**
+  - Conversations and messages stored in Supabase PostgreSQL tables.
+  - Automatic conversation creation on agent startup.
+  - Non-blocking message persistence (user and model messages saved after each turn).
+  - Configurable message retrieval with `LIMIT` to prevent unbounded history loading.
+  - Graceful degradation: agent continues with in-memory history if Supabase is unavailable.
 - **Security First:** Strict `.env` isolation, secret masking in error logs, and RLS policies on database tables.
 
 ---
@@ -44,16 +51,47 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 ```text
 ai-agent-practice/
-├── .env.example       # Template for environment variables
-├── .gitignore          # Git exclusion rules (node_modules, .env)
-├── config.js           # Shared settings (model, system instructions, retry/memory limits)
-├── index.js            # Main CLI entry point & chat loop with tool call handler
-├── package.json        # Node.js dependencies and run scripts
-├── schema.sql          # SQL schema for Supabase (_health_check table DDL)
-├── supabase.js         # Supabase client initialization & connection probe
-├── test.js             # Dual-mode test runner (local tool tests + API integration tests)
-└── tools.js            # Tool declarations, implementations, and safe executor
+├── .env.example              # Template for environment variables
+├── .gitignore                # Git exclusion rules (node_modules, .env)
+├── config.js                 # Shared settings (model, system instructions, retry/memory limits)
+├── index.js                  # Main CLI entry point & chat loop with tool call handler + persistence
+├── package.json              # Node.js dependencies and run scripts
+├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
+├── supabase.js               # Supabase client, connection probe, and persistence functions
+├── test.js                   # Dual-mode test runner (local tool tests + API integration tests)
+├── test-supabase-memory.js   # Supabase persistent memory integration tests
+└── tools.js                  # Tool declarations, implementations, and safe executor
 ```
+
+---
+
+## 🗃 Database Schema (Phase 4B)
+
+Atlas AI uses two Supabase tables for persistent conversation memory:
+
+### `conversations`
+| Column       | Type                          | Description                       |
+|-------------|-------------------------------|-----------------------------------|
+| `id`        | `uuid` (PK, auto-generated)  | Unique conversation identifier    |
+| `title`     | `text`                        | Human-readable session title      |
+| `created_at`| `timestamptz`                 | When the conversation started     |
+| `updated_at`| `timestamptz`                 | Last activity timestamp           |
+
+### `messages`
+| Column            | Type                          | Description                       |
+|------------------|-------------------------------|-----------------------------------|
+| `id`             | `uuid` (PK, auto-generated)  | Unique message identifier         |
+| `conversation_id`| `uuid` (FK → conversations)  | Parent conversation               |
+| `role`           | `text` (`user` or `model`)   | Who sent the message              |
+| `content`        | `text`                        | Message text content              |
+| `created_at`     | `timestamptz`                 | When the message was saved        |
+
+**Index:** `idx_messages_conversation_created` on `(conversation_id, created_at)` for fast retrieval.
+
+**RLS:** Development-mode policies allow full access via `anon` and `authenticated` roles. Authentication will be added in a later phase.
+
+### Setup
+Run the `schema.sql` file in your Supabase SQL Editor to create all tables, policies, and indexes.
 
 ---
 
@@ -65,8 +103,14 @@ sequenceDiagram
     participant CLI as index.js
     participant Gemini as Gemini API
     participant Tools as tools.js
+    participant DB as Supabase
+
+    Note over CLI,DB: Startup
+    CLI->>DB: createConversation()
+    DB-->>CLI: conversation.id
 
     User->>CLI: Sends message (e.g. "What is 25 * 48?")
+    CLI->>DB: saveMessage(user, message)
     CLI->>Gemini: Sends user input + recent history + tool declarations
     alt Tool Required
         Gemini-->>CLI: Returns functionCall request (e.g. calculator)
@@ -77,6 +121,7 @@ sequenceDiagram
     else Direct Answer
         Gemini-->>CLI: Returns text answer directly
     end
+    CLI->>DB: saveMessage(model, response)
     CLI-->>User: Displays response to user
 ```
 
@@ -112,11 +157,14 @@ SUPABASE_ANON_KEY=your_supabase_anon_key
 npm install
 ```
 
-### 2. Start Interactive Chat CLI
+### 2. Set Up Database
+Open the **Supabase SQL Editor** and run the contents of `schema.sql` to create all required tables.
+
+### 3. Start Interactive Chat CLI
 ```bash
 npm start
 ```
-Type your prompt or question, and type `exit` when done.
+Type your prompt or question, and type `exit` when done. The agent will automatically create a conversation in Supabase and persist all messages.
 
 ---
 
@@ -132,6 +180,12 @@ npm run test:local
 Verifies environment variables and tests connectivity to Supabase:
 ```bash
 npm run test:supabase
+```
+
+### Run Supabase Memory Tests (Zero Gemini API Calls)
+Tests full CRUD lifecycle for conversations and messages against live Supabase:
+```bash
+npm run test:supabase-memory
 ```
 
 ### Run API Integration Tests (Consumes API Quota)
@@ -154,7 +208,7 @@ npm test
 - [x] **Phase 3: Autonomous Tool Calling** — Function declarations for `calculator`, `current_time`, and `get_weather`.
 - [x] **Phase 3 Hardening: Resilience & Testing** — Exponential backoff for `429` rate limits, local test suite with 0 quota cost, error sanitization.
 - [x] **Phase 4A: Supabase Foundation** — Supabase JS client integration, environment validation, health check probe.
-- [ ] **Phase 4B: Persistent Memory** — Store session history and user state in Supabase tables.
+- [x] **Phase 4B: Persistent Memory** — Store conversation sessions and messages in Supabase tables with CRUD functions, non-blocking persistence, and configurable retrieval limits.
 - [ ] **Phase 5: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
 
 ---
@@ -164,3 +218,4 @@ npm test
 - All errors caught during API requests mask sensitive strings like `GEMINI_API_KEY` before printing to terminal output.
 - Expression inputs to the calculator tool are sanitized against a whitelist regex to prevent code execution vulnerabilities.
 - Supabase Row Level Security (RLS) policies are enforced on database tables.
+- Persistence errors never crash the agent — they are caught and logged as warnings.
