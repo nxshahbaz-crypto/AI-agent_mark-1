@@ -1,6 +1,6 @@
 # AI Agent Practice — Atlas AI
 
-A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, persistent memory, and database integration—without relying on heavy agent frameworks.
+A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, persistent memory, and a pluggable tool registry—without relying on heavy agent frameworks.
 
 ---
 
@@ -9,10 +9,11 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 **Atlas AI** is designed to demonstrate how autonomous AI agents operate under the hood:
 1. **Natural Language Understanding & Persona:** Uses system instructions to define a consistent, honest AI identity ("Atlas").
 2. **Context & Memory Management:** Implements sliding-window conversation history to maintain multi-turn context while keeping token consumption optimized.
-3. **Autonomous Function/Tool Calling:** Exposes local functions (`calculator`, `current_time`, `get_weather`) directly to Gemini via schema declarations, letting the LLM decide when and how to invoke tools.
+3. **Autonomous Function/Tool Calling:** Uses a pluggable tool registry to expose functions to Gemini, letting the LLM decide when and how to invoke tools.
 4. **Resilience & Rate-Limit Hardening:** Employs exponential backoff retries for API rate limits (`HTTP 429`) and sanitizes all errors so API keys and secrets are never leaked.
 5. **Database Integration Layer:** Integrates Supabase as the foundation for persistent chat history and agent memory.
 6. **Persistent Conversation Memory:** Saves every conversation and message to Supabase, enabling cross-session history retrieval with configurable limits.
+7. **Domain-Agnostic Tool Registry:** Tools can be registered, validated, executed, and swapped without modifying the agent core.
 
 ---
 
@@ -20,10 +21,11 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 - **Interactive CLI Interface:** Multi-turn conversation loop in the terminal.
 - **Sliding-Window Memory:** Configurable history window (`MAX_TURNS`) to preserve context efficiently.
-- **Autonomous Tool Calling:**
-  - `calculator`: Evaluates arithmetic expressions safely with input sanitization.
-  - `current_time`: Returns local system date and time.
-  - `get_weather`: Returns mock/simulated weather data with explicit disclaimers.
+- **Pluggable Tool Registry (Phase 4C):**
+  - Domain-agnostic `ToolRegistry` class with `register()`, `unregister()`, `executeTool()`, `validateToolArguments()`, `getToolDefinitions()`.
+  - Agent core has zero knowledge of specific tools — fully decoupled.
+  - Tools can be added, replaced, or removed at runtime without touching `index.js`.
+  - Default tools: `calculator`, `current_time`, `get_weather`.
 - **Rate-Limit Protection & Exponential Backoff:** Automatically retries API calls on `429` status codes with increasing backoff delays (2s → 4s → 8s up to 30s).
 - **Decoupled Local Testing Mode:** Suite of local tool unit tests that run with **zero API calls**, protecting your Gemini quota.
 - **Supabase Foundation:** Verified client module with environment variable validation and health-check probe capabilities.
@@ -54,14 +56,115 @@ ai-agent-practice/
 ├── .env.example              # Template for environment variables
 ├── .gitignore                # Git exclusion rules (node_modules, .env)
 ├── config.js                 # Shared settings (model, system instructions, retry/memory limits)
-├── index.js                  # Main CLI entry point & chat loop with tool call handler + persistence
+├── index.js                  # Main CLI entry point — domain-agnostic agent core
 ├── package.json              # Node.js dependencies and run scripts
 ├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
+├── tool-registry.js          # ToolRegistry class — pluggable tool management system
+├── tools.js                  # Default tool registrations (calculator, time, weather)
 ├── test.js                   # Dual-mode test runner (local tool tests + API integration tests)
+├── test-registry.js          # Tool registry unit tests (registration, execution, validation)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
-└── tools.js                  # Tool declarations, implementations, and safe executor
+└── apply-schema.js           # Schema status checker for Supabase
 ```
+
+---
+
+## 🔌 Tool Registry (Phase 4C)
+
+The agent uses a **domain-agnostic Tool Registry** that decouples the agent core from specific tool implementations.
+
+### Architecture
+
+```mermaid
+graph TD
+    A["Agent Core (index.js)"] --> R["Tool Registry"]
+    R --> T1["calculator"]
+    R --> T2["current_time"]
+    R --> T3["get_weather"]
+    R -.-> T4["Your custom tool"]
+
+    style A fill:#2d2d2d,stroke:#4fc3f7,color:#fff
+    style R fill:#1a1a2e,stroke:#e94560,color:#fff
+    style T4 stroke-dasharray: 5 5
+```
+
+### Registry API
+
+| Method | Description |
+|--------|-------------|
+| `register({ name, description, parameters, execute })` | Add a tool (chainable) |
+| `unregister(name)` | Remove a tool by name |
+| `has(name)` | Check if a tool exists |
+| `listTools()` | List all registered tool names |
+| `getTool(name)` | Get full tool config |
+| `getToolDefinitions()` | Get Gemini-compatible declarations |
+| `executeTool(name, args)` | Execute a tool safely |
+| `validateToolArguments(name, args)` | Check required args |
+| `clear()` | Remove all tools |
+| `size` | Number of registered tools |
+
+### How to Add a New Tool
+
+Adding a new tool requires **zero changes** to the agent core (`index.js`). Just register it in `tools.js`:
+
+```javascript
+// In tools.js — add this after the existing registrations:
+
+registry.register({
+  name: "search_faculty",
+  description: "Search for a faculty member by name or department.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Faculty name or department to search",
+      },
+    },
+    required: ["query"],
+  },
+  execute(args) {
+    const { query } = args;
+    // Your implementation here — database lookup, API call, etc.
+    return { name: "Dr. Smith", department: query, office: "Room 204" };
+  },
+});
+```
+
+That's it. Gemini will automatically discover the new tool and use it when appropriate.
+
+### Swapping Tools for a Different Project
+
+For a completely different project (e.g., an e-commerce bot), create a new tools file:
+
+```javascript
+// tools-ecommerce.js
+import { ToolRegistry } from "./tool-registry.js";
+export const registry = new ToolRegistry();
+
+registry.register({
+  name: "search_products",
+  description: "Search the product catalog.",
+  parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  execute: (args) => { /* ... */ },
+});
+
+registry.register({
+  name: "get_order",
+  description: "Look up an order by ID.",
+  parameters: { type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] },
+  execute: (args) => { /* ... */ },
+});
+```
+
+Then change the import in `index.js`:
+```javascript
+// Change this one line:
+import { registry } from "./tools-ecommerce.js";
+```
+
+The agent core, Supabase persistence, memory management, and retry logic all remain untouched.
 
 ---
 
@@ -102,7 +205,7 @@ sequenceDiagram
     participant User
     participant CLI as index.js
     participant Gemini as Gemini API
-    participant Tools as tools.js
+    participant Registry as ToolRegistry
     participant DB as Supabase
 
     Note over CLI,DB: Startup
@@ -111,18 +214,18 @@ sequenceDiagram
 
     User->>CLI: Sends message (e.g. "What is 25 * 48?")
     CLI->>DB: saveMessage(user, message)
-    CLI->>Gemini: Sends user input + recent history + tool declarations
+    CLI->>Gemini: user input + history + registry.getToolDefinitions()
     alt Tool Required
-        Gemini-->>CLI: Returns functionCall request (e.g. calculator)
-        CLI->>Tools: Executes tool function safely
-        Tools-->>CLI: Returns structured output ({ result: 1200 })
-        CLI->>Gemini: Sends functionResponse back to model
+        Gemini-->>CLI: Returns functionCall request
+        CLI->>Registry: registry.executeTool(name, args)
+        Registry-->>CLI: Returns structured result
+        CLI->>Gemini: Sends functionResponse back
         Gemini-->>CLI: Formats natural language response
     else Direct Answer
         Gemini-->>CLI: Returns text answer directly
     end
     CLI->>DB: saveMessage(model, response)
-    CLI-->>User: Displays response to user
+    CLI-->>User: Displays response
 ```
 
 ---
@@ -176,6 +279,12 @@ Validates calculator, time, weather mock, and edge cases locally without consumi
 npm run test:local
 ```
 
+### Run Tool Registry Tests (Zero API Calls)
+Tests registration, discovery, execution, validation, unregister, replacement, and domain-agnostic swap simulation:
+```bash
+npm run test:registry
+```
+
 ### Run Supabase Connection Test
 Verifies environment variables and tests connectivity to Supabase:
 ```bash
@@ -209,6 +318,7 @@ npm test
 - [x] **Phase 3 Hardening: Resilience & Testing** — Exponential backoff for `429` rate limits, local test suite with 0 quota cost, error sanitization.
 - [x] **Phase 4A: Supabase Foundation** — Supabase JS client integration, environment validation, health check probe.
 - [x] **Phase 4B: Persistent Memory** — Store conversation sessions and messages in Supabase tables with CRUD functions, non-blocking persistence, and configurable retrieval limits.
+- [x] **Phase 4C: Tool Registry** — Domain-agnostic ToolRegistry class with register/unregister/execute/validate. Agent core is fully decoupled from tool implementations.
 - [ ] **Phase 5: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
 
 ---
@@ -219,3 +329,4 @@ npm test
 - Expression inputs to the calculator tool are sanitized against a whitelist regex to prevent code execution vulnerabilities.
 - Supabase Row Level Security (RLS) policies are enforced on database tables.
 - Persistence errors never crash the agent — they are caught and logged as warnings.
+- Tool execution is wrapped in try/catch — a crashing tool never brings down the agent.

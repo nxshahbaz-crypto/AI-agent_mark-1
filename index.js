@@ -5,7 +5,7 @@ import {
   SYSTEM_INSTRUCTION, MODEL, MAX_TURNS,
   MAX_RETRIES, BASE_DELAY_MS, MAX_DELAY_MS,
 } from "./config.js";
-import { toolDeclarations, executeTool } from "./tools.js";
+import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
 
 // ─── Configuration ───────────────────────────────────────────────
@@ -64,7 +64,7 @@ async function handleToolCalls(chat, response) {
   while (response.functionCalls && response.functionCalls.length > 0) {
     const toolParts = response.functionCalls.map((fc) => {
       console.log(`  🔧 Tool call: ${fc.name}(${JSON.stringify(fc.args || {})})`);
-      const result = executeTool(fc.name, fc.args || {});
+      const result = registry.executeTool(fc.name, fc.args || {});
       console.log(`  📦 Result: ${JSON.stringify(result)}`);
       return {
         functionResponse: {
@@ -95,7 +95,7 @@ function persistMessage(role, content) {
 // ─── Main Chat Loop ─────────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🤖  Atlas AI  —  Phase 4B (Memory)    ║");
+  console.log("║   🤖  Atlas AI  —  Phase 4C (Registry)  ║");
   console.log("║   Type your message and press Enter.     ║");
   console.log("║   Type 'exit' to quit.                   ║");
   console.log("╚══════════════════════════════════════════╝");
@@ -150,7 +150,7 @@ async function main() {
         model: MODEL,
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
-          tools: toolDeclarations,
+          tools: registry.getToolDefinitions(),
         },
         history: recentHistory,
       });
