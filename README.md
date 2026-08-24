@@ -1,6 +1,6 @@
 # AI Agent Practice — Atlas AI
 
-A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, persistent memory, and a pluggable tool registry—without relying on heavy agent frameworks.
+A modular, production-style AI agent built from scratch using **Node.js**, **Google Gemini API**, and **Supabase**. This repository is an incremental learning and practice project demonstrating core AI agent concepts—such as context management, autonomous tool calling, rate-limit resilience, persistent memory, a pluggable tool registry, and smart token management—without relying on heavy agent frameworks.
 
 ---
 
@@ -26,6 +26,11 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
   - Agent core has zero knowledge of specific tools — fully decoupled.
   - Tools can be added, replaced, or removed at runtime without touching `index.js`.
   - Default tools: `calculator`, `current_time`, `get_weather`.
+- **Smart Context & Token Management (Phase 5):**
+  - **Context Budget:** Dynamically estimates token usage to stay within `MAX_CONTEXT_TOKENS`.
+  - **Deduplication:** Automatically removes duplicated messages to save tokens.
+  - **Payload Truncation:** Large tool results are truncated with metadata warnings to prevent blowing up the context window.
+  - **Observability:** Logs context stats (messages considered/sent, estimated tokens, trimming status) per turn without exposing sensitive data.
 - **Rate-Limit Protection & Exponential Backoff:** Automatically retries API calls on `429` status codes with increasing backoff delays (2s → 4s → 8s up to 30s).
 - **Decoupled Local Testing Mode:** Suite of local tool unit tests that run with **zero API calls**, protecting your Gemini quota.
 - **Supabase Foundation:** Verified client module with environment variable validation and health-check probe capabilities.
@@ -60,9 +65,11 @@ ai-agent-practice/
 ├── package.json              # Node.js dependencies and run scripts
 ├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
+├── context-manager.js        # Smart history selection, token budgeting, and truncation
 ├── tool-registry.js          # ToolRegistry class — pluggable tool management system
 ├── tools.js                  # Default tool registrations (calculator, time, weather)
 ├── test.js                   # Dual-mode test runner (local tool tests + API integration tests)
+├── test-context.js           # Context manager unit tests (trimming, tokens, truncation)
 ├── test-registry.js          # Tool registry unit tests (registration, execution, validation)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
 └── apply-schema.js           # Schema status checker for Supabase
@@ -165,6 +172,20 @@ import { registry } from "./tools-ecommerce.js";
 ```
 
 The agent core, Supabase persistence, memory management, and retry logic all remain untouched.
+
+---
+
+## 🧠 Token and Context Management (Phase 5)
+
+To ensure Atlas AI runs efficiently and stays within API token limits (especially for high-volume hackathon usage), it employs a **deterministic context manager**.
+
+1. **Context Budget:** `MAX_CONTEXT_TOKENS` ensures we never send the entire conversation history. The agent dynamically estimates the size of each message (using a fast `length / 4` heuristic).
+2. **Prioritizing the Present:** It iterates *backwards* through the history, ensuring the most recent messages (and the latest user prompt) are always included first. If the budget is exhausted, older messages are dropped.
+3. **Payload Truncation:** If a tool returns a massive JSON object (e.g. 500 records), `context-manager.js` safely truncates the payload to `MAX_TOOL_PAYLOAD_SIZE` and adds a `_meta` flag letting Gemini know the data was truncated. This prevents single API calls from blowing the token budget.
+4. **Deduplication:** It filters out exact consecutive duplicate messages to save space.
+5. **Observability:** Every request prints a clean status line:
+   `📊 Context: 5/10 msgs | ~400 tokens | Trimmed: Yes | Tools: 1`
+   This provides full visibility into API consumption without logging API keys or sensitive message contents.
 
 ---
 
@@ -319,7 +340,8 @@ npm test
 - [x] **Phase 4A: Supabase Foundation** — Supabase JS client integration, environment validation, health check probe.
 - [x] **Phase 4B: Persistent Memory** — Store conversation sessions and messages in Supabase tables with CRUD functions, non-blocking persistence, and configurable retrieval limits.
 - [x] **Phase 4C: Tool Registry** — Domain-agnostic ToolRegistry class with register/unregister/execute/validate. Agent core is fully decoupled from tool implementations.
-- [ ] **Phase 5: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
+- [x] **Phase 5: Smart Context + Token Management** — Token estimation, configurable context budgets, deduplication, payload truncation, and observability logging.
+- [ ] **Phase 6: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
 
 ---
 

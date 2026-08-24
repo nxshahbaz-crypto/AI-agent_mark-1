@@ -1,7 +1,7 @@
 {
   "name": "ai-agent-practice",
   "version": "1.0.0",
-  "description": "AI Agent practice project - Phase 4C: Tool Registry",
+  "description": "AI Agent practice project - Phase 5: Smart Context + Token Management",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "test:api": "node test.js api",
     "test:supabase": "node supabase.js",
     "test:supabase-memory": "node test-supabase-memory.js",
-    "test:registry": "node test-registry.js"
+    "test:registry": "node test-registry.js",
+    "test:context": "node test-context.js"
   },
   "keywords": [
     "ai",

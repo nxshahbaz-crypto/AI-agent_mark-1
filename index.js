@@ -4,9 +4,11 @@ import readline from "readline";
 import {
   SYSTEM_INSTRUCTION, MODEL, MAX_TURNS,
   MAX_RETRIES, BASE_DELAY_MS, MAX_DELAY_MS,
+  MAX_CONTEXT_TOKENS, MAX_OUTPUT_TOKENS, MAX_TOOL_PAYLOAD_SIZE
 } from "./config.js";
 import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
+import { buildContext, truncatePayload, estimateTokens } from "./context-manager.js";
 
 // ─── Configuration ───────────────────────────────────────────────
 const API_KEY = process.env.GEMINI_API_KEY;
@@ -64,7 +66,8 @@ async function handleToolCalls(chat, response) {
   while (response.functionCalls && response.functionCalls.length > 0) {
     const toolParts = response.functionCalls.map((fc) => {
       console.log(`  🔧 Tool call: ${fc.name}(${JSON.stringify(fc.args || {})})`);
-      const result = registry.executeTool(fc.name, fc.args || {});
+      const rawResult = registry.executeTool(fc.name, fc.args || {});
+      const result = truncatePayload(rawResult, MAX_TOOL_PAYLOAD_SIZE);
       console.log(`  📦 Result: ${JSON.stringify(result)}`);
       return {
         functionResponse: {
@@ -142,8 +145,14 @@ async function main() {
     }
 
     try {
-      // Sliding window: only send the most recent turns to control tokens
-      const recentHistory = conversationHistory.slice(-MAX_TURNS * 2);
+      // Estimate tokens for the new message to reserve budget
+      const userMsgTokens = estimateTokens({ role: "user", parts: [{ text: userInput }] });
+      const availableBudget = Math.max(0, MAX_CONTEXT_TOKENS - userMsgTokens);
+
+      // Manage context budget
+      const { context, stats } = buildContext(conversationHistory, availableBudget);
+
+      console.log(`  📊 Context: ${stats.sent}/${stats.considered} msgs | ~${stats.estimatedTokens + userMsgTokens} tokens | Trimmed: ${stats.trimmed ? "Yes" : "No"} | Tools: ${stats.toolResultsIncluded}`);
 
       // Create chat with system instruction, tools, and recent history
       const chat = ai.chats.create({
@@ -151,8 +160,9 @@ async function main() {
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           tools: registry.getToolDefinitions(),
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
         },
-        history: recentHistory,
+        history: context,
       });
 
       // Send message to Gemini (with retry on 429)

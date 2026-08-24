@@ -6,6 +6,9 @@ export const MAX_TURNS = 12; // Keep last 12 turns (24 messages) to control toke
 export const MAX_RETRIES = 3; // Retry attempts for 429 rate limits
 export const BASE_DELAY_MS = 2000; // Starting delay for exponential backoff (2s)
 export const MAX_DELAY_MS = 30000; // Cap backoff at 30 seconds
+export const MAX_CONTEXT_TOKENS = 6000; // Max estimated tokens to send in history
+export const MAX_OUTPUT_TOKENS = 1024;  // Max tokens for Gemini response
+export const MAX_TOOL_PAYLOAD_SIZE = 1000; // Max characters for tool results
 
 export const SYSTEM_INSTRUCTION = `You are Atlas, a helpful AI assistant built as a practice project.
 
