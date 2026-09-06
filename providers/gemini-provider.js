@@ -92,6 +92,7 @@ export class GeminiProvider {
     registry,
     maxOutputTokens = MAX_OUTPUT_TOKENS,
     maxToolPayloadSize = MAX_TOOL_PAYLOAD_SIZE,
+    executeTools = true,
   }) {
     const client = this.getClient();
 
@@ -112,7 +113,23 @@ export class GeminiProvider {
     // Send the user input
     let response = await this.sendWithRetry(chat, { message });
 
-    // Handle tool calls in a loop until Gemini produces final text
+    // When executeTools is false, return immediately so the Agent can drive the step loop
+    if (executeTools === false) {
+      const toolCalls = (response.functionCalls || []).map((fc) => ({
+        id: fc.id,
+        name: fc.name,
+        args: fc.args || {},
+      }));
+
+      return {
+        text: response.text || "",
+        provider: this.name,
+        toolCalls,
+        raw: response,
+      };
+    }
+
+    // Handle tool calls in a loop until Gemini produces final text (default standalone mode)
     const toolsUsed = [];
     while (response.functionCalls && response.functionCalls.length > 0) {
       const toolParts = [];

@@ -16,6 +16,10 @@ export const AI_FALLBACK_PROVIDER = process.env.AI_FALLBACK_PROVIDER || "groq";
 export const GROQ_DEFAULT_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 export const AI_FORCE_PRIMARY_FAILURE = process.env.AI_FORCE_PRIMARY_FAILURE === "true";
 
+// Agent Planning Configuration (Phase 6)
+export const MAX_AGENT_STEPS = 5; // Maximum tool execution steps per user request
+
+
 
 
 export const SYSTEM_INSTRUCTION = `You are Atlas, a helpful AI assistant built as a practice project.

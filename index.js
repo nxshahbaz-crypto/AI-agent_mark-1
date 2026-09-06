@@ -8,11 +8,13 @@ import {
   AI_PRIMARY_PROVIDER,
   AI_FALLBACK_PROVIDER,
   AI_FORCE_PRIMARY_FAILURE,
+  MAX_AGENT_STEPS,
 } from "./config.js";
 import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
 import { buildContext, estimateTokens } from "./context-manager.js";
 import { createDefaultRouter, sanitizeErrorMessage } from "./providers/provider-router.js";
+import { Agent } from "./agent.js";
 
 // ─── Configuration Validation ───────────────────────────────────
 // Primary provider key is required; fallback key is optional unless invoked.
@@ -37,6 +39,15 @@ if (primaryProvider === "gemini") {
 
 // Initialize the Provider Router (Gemini primary -> Groq fallback)
 const router = createDefaultRouter();
+
+// Initialize the Multi-Step Agent (Phase 6)
+const agent = new Agent({
+  router,
+  registry,
+  maxSteps: MAX_AGENT_STEPS,
+  systemInstruction: SYSTEM_INSTRUCTION,
+  maxOutputTokens: MAX_OUTPUT_TOKENS,
+});
 
 // ─── Conversation Memory ─────────────────────────────────────────
 // In-memory history for the current session; also persisted to Supabase.
@@ -70,7 +81,7 @@ function persistMessage(role, content) {
 // ─── Main Chat Loop ─────────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════════════════════════╗");
-  console.log("║   🤖  Atlas AI  —  Phase 5.5 (Provider Abstraction)     ║");
+  console.log("║   🤖  Atlas AI  —  Phase 6 (Multi-Step Planning)         ║");
   console.log(`║   Primary: ${primaryProvider.padEnd(10)} Fallback: ${fallbackProvider.padEnd(23)}║`);
   console.log("║   Type your message and press Enter.                     ║");
   console.log("║   Type 'exit' to quit.                                   ║");
@@ -86,7 +97,6 @@ async function main() {
   }
 
   // ── Initialize Supabase conversation ──
-
   try {
     const conversation = await createConversation();
     activeConversationId = conversation.id;
@@ -137,13 +147,10 @@ async function main() {
         `  📊 Context: ${stats.sent}/${stats.considered} msgs | ~${stats.estimatedTokens + userMsgTokens} tokens | Trimmed: ${stats.trimmed ? "Yes" : "No"} | Tools: ${stats.toolResultsIncluded}`
       );
 
-      // Send message through provider router (automatic failover if primary encounters recoverable error)
-      const response = await router.sendMessage({
+      // Execute multi-step agent planning loop
+      const response = await agent.run({
         message: userInput,
         history: context,
-        systemInstruction: SYSTEM_INSTRUCTION,
-        registry,
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
       });
 
       const replyText = response.text;
@@ -160,6 +167,7 @@ async function main() {
 
       console.log(`\nAtlas: ${replyText}\n`);
     } catch (error) {
+
       const safeMessage = sanitizeErrorMessage(error.message || "Unknown error");
 
       if (error.status === 401 || error.status === 403) {

@@ -21,6 +21,13 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 - **Interactive CLI Interface:** Multi-turn conversation loop in the terminal.
 - **Sliding-Window Memory:** Configurable history window (`MAX_TURNS`) to preserve context efficiently.
+- **Multi-Step Agent Planning (Phase 6):**
+  - **Sequential & Dependent Tool Execution:** Agent orchestrates multi-step tool execution loops where outputs from one tool can inform subsequent tool calls.
+  - **Parallel Independent Tool Calls:** Capable of handling multiple tool requests in a single step (e.g., weather lookup + arithmetic calculation) and synthesizing a unified response.
+  - **Loop Protection:** Configurable step limit (`MAX_AGENT_STEPS = 5`) prevents infinite loops or excessive API calls.
+  - **Unrecoverable Error Halting:** Immediate and graceful halt when encountering fatal tool errors (unknown tool, critical failures) without cascading bad state.
+  - **Mid-Task Provider Failover:** Every step leverages `ProviderRouter` so if a provider fails mid-plan (e.g. rate limit on step 2), the fallback provider seamlessly completes the task.
+  - **Zero-Quota Agent Tests:** 23 comprehensive mock tests covering single-step, parallel, sequential, loop limits, error handling, and mid-task failover.
 - **AI Provider Abstraction & Automatic Failover (Phase 5.5):**
   - Decoupled provider layer isolating provider-specific SDK logic behind a common interface.
   - **Primary Provider:** Google Gemini (`gemini-3.6-flash`).
@@ -30,7 +37,7 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
   - **Permanent Error Shield:** Non-recoverable errors (such as invalid credentials `401`/`403`) throw immediately without futile fallback.
   - **Tool Calling Parity:** Both Gemini and Groq support local function execution through the `ToolRegistry`.
   - **Observability:** Structured logs (`provider=gemini status=failed reason=rate_limit`, `provider=groq status=success fallback=true`) with automatic secret masking.
-  - **Zero-Quota Provider Tests:** 48 mock unit tests covering all failover edge cases without spending API credits.
+  - **Zero-Quota Provider Tests:** 58 mock unit tests covering all failover edge cases without spending API credits.
 - **Pluggable Tool Registry (Phase 4C):**
   - Domain-agnostic `ToolRegistry` class with `register()`, `unregister()`, `executeTool()`, `validateToolArguments()`, `getToolDefinitions()`, and `getOpenAIToolDefinitions()`.
   - Agent core has zero knowledge of specific tools — fully decoupled.
@@ -70,8 +77,9 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 ai-agent-practice/
 ├── .env.example              # Template for environment variables (Gemini, Groq, Supabase)
 ├── .gitignore                # Git exclusion rules (node_modules, .env)
-├── config.js                 # Shared settings (models, providers, retry/memory limits)
-├── index.js                  # Main CLI entry point — domain-agnostic agent core
+├── config.js                 # Shared settings (models, providers, retry/memory limits, MAX_AGENT_STEPS)
+├── index.js                  # Main CLI entry point — terminal interaction loop
+├── agent.js                  # Multi-step agent loop orchestrator (Phase 6)
 ├── package.json              # Node.js dependencies and run scripts
 ├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
@@ -86,6 +94,7 @@ ai-agent-practice/
 ├── test-context.js           # Context manager unit tests (trimming, tokens, truncation)
 ├── test-registry.js          # Tool registry unit tests (registration, execution, validation)
 ├── test-providers.js         # Provider abstraction & failover tests (mocked, 0 API quota)
+├── test-agent.js             # Multi-step agent planning unit tests (mocked, 0 API quota)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
 └── apply-schema.js           # Schema status checker for Supabase
 ```
@@ -234,35 +243,75 @@ Run the `schema.sql` file in your Supabase SQL Editor to create all tables, poli
 
 ---
 
-## ⚙️ How the Agent Works
+## 🧩 Multi-Step Agent Planning (Phase 6)
+
+Atlas AI includes a dedicated **Agent Orchestrator** (`agent.js`) that allows the model to solve complex user requests requiring multiple tool executions—either in parallel (independent) or sequentially (dependent).
+
+### Multi-Step Orchestration Sequence
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLI as index.js
-    participant Gemini as Gemini API
+    participant Agent as Agent (agent.js)
+    participant Router as ProviderRouter
+    participant LLM as Active LLM (Gemini/Groq)
     participant Registry as ToolRegistry
-    participant DB as Supabase
 
-    Note over CLI,DB: Startup
-    CLI->>DB: createConversation()
-    DB-->>CLI: conversation.id
-
-    User->>CLI: Sends message (e.g. "What is 25 * 48?")
-    CLI->>DB: saveMessage(user, message)
-    CLI->>Gemini: user input + history + registry.getToolDefinitions()
-    alt Tool Required
-        Gemini-->>CLI: Returns functionCall request
-        CLI->>Registry: registry.executeTool(name, args)
-        Registry-->>CLI: Returns structured result
-        CLI->>Gemini: Sends functionResponse back
-        Gemini-->>CLI: Formats natural language response
-    else Direct Answer
-        Gemini-->>CLI: Returns text answer directly
+    User->>CLI: "Check Delhi weather and convert temperature to Fahrenheit"
+    CLI->>Agent: agent.run({ message, history })
+    loop Step 1 to MAX_AGENT_STEPS (5)
+        Agent->>Router: sendMessage({ message, history, executeTools: false })
+        Router->>LLM: Prompt + History + Tool Definitions
+        LLM-->>Router: Response (Text OR Tool Calls)
+        Router-->>Agent: { text, toolCalls, provider, fallback }
+        alt Has Tool Calls
+            Agent->>Registry: Execute each tool call
+            Registry-->>Agent: Tool execution results
+            alt Tool Error is Unrecoverable
+                Agent-->>CLI: Halt plan immediately with error explanation
+            else Tool Succeeded
+                Agent->>Agent: Append model call & tool response to working history
+            end
+        else Final Text Answer
+            Agent-->>CLI: Return final synthesized answer
+        end
     end
-    CLI->>DB: saveMessage(model, response)
-    CLI-->>User: Displays response
+    alt Max Steps (5) Exceeded
+        Agent->>Router: Request final summary from available results
+        Router-->>Agent: Return summary response
+        Agent-->>CLI: Return result with maxStepsReached flag
+    end
+    CLI-->>User: Display final response
 ```
+
+### Key Capabilities
+
+1. **Independent Tools in Parallel:**
+   - When a user asks: `"What is the weather in Delhi and calculate 25 * 48"`, the model returns two tool calls (`get_weather` and `calculator`) in step 1.
+   - The agent executes both tools and passes both results back to the LLM.
+   - In step 2, the LLM synthesizes both outputs into one coherent answer.
+
+2. **Sequential & Dependent Tools:**
+   - When a user asks: `"Check Delhi weather and convert its temperature to Fahrenheit"`, the agent cannot compute the temperature until step 1 returns `"28°C"`.
+   - **Step 1:** Calls `get_weather(city: "Delhi")` → returns `28°C`.
+   - **Step 2:** Calls `calculator(expression: "(28 * 9/5) + 32")` → returns `82.4`.
+   - **Step 3:** Synthesizes the final answer: `"The weather in Delhi is 28°C (82.4°F)."`.
+
+3. **Loop Protection (`MAX_AGENT_STEPS = 5`):**
+   - A runaway or repeating model loop is strictly capped at `maxSteps` (default: 5, configured in `config.js`).
+   - If the limit is reached without a natural termination, the agent halts tool execution, requests a final summary from the LLM based on gathered results, and sets `maxStepsReached: true`.
+
+4. **Immediate Halting on Unrecoverable Errors:**
+   - If a tool reports an unrecoverable failure (unknown tool, critical syntax error, or unrecoverable flag), the agent halts immediately rather than compounding bad state in subsequent steps.
+
+5. **Mid-Task Provider Failover:**
+   - Each step in the loop calls `router.sendMessage()`.
+   - If Gemini succeeds on Step 1, but suffers a rate limit (`429`) or server error (`503`) on Step 2, the `ProviderRouter` automatically fails over to Groq.
+   - Groq seamlessly receives the translated conversation history (including previous tool calls and results) and finishes the task.
+
+6. **Context Budgeting Preserved:**
+   - Each step's call to the LLM respects the `ContextManager` token limits and payload truncations, ensuring intermediate steps never exhaust context windows.
 
 ---
 
@@ -428,6 +477,12 @@ Validates all failover scenarios (429 rate limit, 5xx server errors, timeouts, a
 npm run test:providers
 ```
 
+### Run Multi-Step Agent Planning Tests (Zero API Calls)
+Validates single-step, parallel independent tools, sequential dependent tools, maximum step limit (5), unrecoverable error halting, and mid-task provider failover using mocked providers:
+```bash
+npm run test:agent
+```
+
 ### Run Supabase Connection Test
 Verifies environment variables and tests connectivity to Supabase:
 ```bash
@@ -464,7 +519,8 @@ npm test
 - [x] **Phase 4C: Tool Registry** — Domain-agnostic ToolRegistry class with register/unregister/execute/validate. Agent core is fully decoupled from tool implementations.
 - [x] **Phase 5: Smart Context + Token Management** — Token estimation, configurable context budgets, deduplication, payload truncation, and observability logging.
 - [x] **Phase 5.5: AI Provider Abstraction + Gemini → Groq Failover** — Decoupled provider layer, automatic failover on recoverable errors (429, 5xx, timeouts), Groq fallback support, zero quota mock test suite.
-- [ ] **Phase 6: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
+- [x] **Phase 6: Multi-Step Agent Planning** — Autonomous multi-step orchestration loop, parallel and sequential/dependent tool calling, max step limit (5), unrecoverable error halting, and mid-task provider failover.
+- [ ] **Phase 7: Advanced Tooling & RAG** — Knowledge retrieval and vector embeddings.
 
 ---
 

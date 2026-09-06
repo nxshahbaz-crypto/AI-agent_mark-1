@@ -65,25 +65,98 @@ export class GroqProvider {
     }
 
     for (const item of history) {
-      const role = item.role === "model" ? "assistant" : item.role;
-      let text = "";
+      // 1. Direct OpenAI/Groq messages
+      if (item.role === "assistant" && item.tool_calls) {
+        messages.push({
+          role: "assistant",
+          content: item.content || null,
+          tool_calls: item.tool_calls,
+        });
+        continue;
+      }
 
+      if (item.role === "tool") {
+        messages.push({
+          role: "tool",
+          tool_call_id: item.tool_call_id,
+          name: item.name,
+          content: typeof item.content === "string" ? item.content : JSON.stringify(item.content),
+        });
+        continue;
+      }
+
+      // 2. Gemini formatted messages
       if (item.parts && Array.isArray(item.parts)) {
-        text = item.parts
+        const functionCalls = item.parts.filter((p) => p.functionCall);
+        const functionResponses = item.parts.filter((p) => p.functionResponse);
+
+        if (functionCalls.length > 0) {
+          messages.push({
+            role: "assistant",
+            content: null,
+            tool_calls: functionCalls.map((p, idx) => ({
+              id: p.functionCall.id || `call_${idx}`,
+              type: "function",
+              function: {
+                name: p.functionCall.name,
+                arguments: JSON.stringify(p.functionCall.args || {}),
+              },
+            })),
+          });
+          continue;
+        }
+
+        if (functionResponses.length > 0) {
+          for (const p of functionResponses) {
+            messages.push({
+              role: "tool",
+              tool_call_id: p.functionResponse.id || p.functionResponse.name,
+              name: p.functionResponse.name,
+              content:
+                typeof p.functionResponse.response === "string"
+                  ? p.functionResponse.response
+                  : JSON.stringify(p.functionResponse.response),
+            });
+          }
+          continue;
+        }
+
+        const text = item.parts
           .map((p) => p.text || "")
           .filter(Boolean)
           .join("\n");
-      } else if (typeof item.content === "string") {
-        text = item.content;
+        if (text) {
+          const role = item.role === "model" ? "assistant" : item.role;
+          messages.push({ role, content: text });
+        }
+        continue;
       }
 
-      if (text) {
-        messages.push({ role, content: text });
+      // 3. Fallback string content
+      if (typeof item.content === "string" && item.content) {
+        const role = item.role === "model" ? "assistant" : item.role;
+        messages.push({ role, content: item.content });
       }
     }
 
     if (message) {
-      messages.push({ role: "user", content: message });
+      if (typeof message === "string") {
+        messages.push({ role: "user", content: message });
+      } else if (Array.isArray(message)) {
+        for (const p of message) {
+          if (p.functionResponse) {
+            messages.push({
+              role: "tool",
+              tool_call_id: p.functionResponse.id || p.functionResponse.name,
+              name: p.functionResponse.name,
+              content:
+                typeof p.functionResponse.response === "string"
+                  ? p.functionResponse.response
+                  : JSON.stringify(p.functionResponse.response),
+            });
+          }
+        }
+      }
     }
 
     return messages;
@@ -97,6 +170,50 @@ export class GroqProvider {
       try {
         return await client.chat.completions.create(params);
       } catch (error) {
+        // Handle Groq Llama-3.3 tool_use_failed special token quirk (e.g. calculator<|channel|>commentary)
+        const failedGenStr =
+          (error.error && error.error.failed_generation) ||
+          (error.error && error.error.error && error.error.error.failed_generation) ||
+          error.failed_generation;
+
+        const isToolUseFailed =
+          error.code === "tool_use_failed" ||
+          (error.error && error.error.code === "tool_use_failed") ||
+          (error.error && error.error.error && error.error.error.code === "tool_use_failed");
+
+        if (isToolUseFailed && failedGenStr) {
+          try {
+            const failedGen = JSON.parse(failedGenStr);
+            if (failedGen && failedGen.name) {
+              const cleanName = failedGen.name.replace(/<\|.*?\|>/g, "").trim();
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: `call_${Date.now()}`,
+                          type: "function",
+                          function: {
+                            name: cleanName,
+                            arguments:
+                              typeof failedGen.arguments === "string"
+                                ? failedGen.arguments
+                                : JSON.stringify(failedGen.arguments || {}),
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              };
+            }
+          } catch {
+            // continue to normal error handling
+          }
+        }
+
         const isRateLimit = error.status === 429 || (error.message && error.message.includes("429"));
         if (isRateLimit && attempt < this.maxRetries) {
           const delay = Math.min(this.baseDelayMs * Math.pow(2, attempt), this.maxDelayMs);
@@ -110,16 +227,17 @@ export class GroqProvider {
   }
 
   /**
-   * Sends a message through Groq and handles tool calls in a multi-turn loop.
+   * Sends a message through Groq and handles tool calls.
    *
    * @param {object} params
-   * @param {string} params.message - User prompt text
+   * @param {string|Array} params.message - User prompt text or tool responses
    * @param {Array} [params.history] - Array of messages from context manager
    * @param {string} [params.systemInstruction] - System prompt
    * @param {object} [params.registry] - ToolRegistry instance
    * @param {number} [params.maxOutputTokens] - Max tokens to generate
    * @param {number} [params.maxToolPayloadSize] - Max characters per tool payload
-   * @returns {Promise<{ text: string, provider: string, toolCalls: string[], raw: object }>}
+   * @param {boolean} [params.executeTools=true] - If false, returns toolCalls immediately without looping
+   * @returns {Promise<{ text: string, provider: string, toolCalls: Array, raw: object }>}
    */
   async sendMessage({
     message,
@@ -128,6 +246,7 @@ export class GroqProvider {
     registry,
     maxOutputTokens = MAX_OUTPUT_TOKENS,
     maxToolPayloadSize = MAX_TOOL_PAYLOAD_SIZE,
+    executeTools = true,
   }) {
     const client = this.getClient();
 
@@ -136,7 +255,6 @@ export class GroqProvider {
     if (registry && typeof registry.getOpenAIToolDefinitions === "function") {
       tools = registry.getOpenAIToolDefinitions();
     } else if (registry && typeof registry.getToolDefinitions === "function") {
-      // Fallback converter from Gemini format if getOpenAIToolDefinitions is absent
       const geminiDefs = registry.getToolDefinitions();
       if (geminiDefs.length > 0 && geminiDefs[0].functionDeclarations) {
         tools = geminiDefs[0].functionDeclarations.map((fn) => ({
@@ -172,6 +290,30 @@ export class GroqProvider {
       }
 
       const responseMessage = choice.message;
+
+      // When executeTools is false, return immediately so the Agent can drive the step loop
+      if (executeTools === false) {
+        const toolCalls = (responseMessage.tool_calls || []).map((tc) => {
+          let fnArgs = {};
+          try {
+            fnArgs = JSON.parse(tc.function.arguments || "{}");
+          } catch {
+            fnArgs = {};
+          }
+          return {
+            id: tc.id,
+            name: tc.function.name,
+            args: fnArgs,
+          };
+        });
+
+        return {
+          text: responseMessage.content || "",
+          provider: this.name,
+          toolCalls,
+          raw: response,
+        };
+      }
 
       // If no tool calls requested, return the final text
       if (!responseMessage.tool_calls || responseMessage.tool_calls.length === 0) {
