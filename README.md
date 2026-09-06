@@ -21,8 +21,18 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 - **Interactive CLI Interface:** Multi-turn conversation loop in the terminal.
 - **Sliding-Window Memory:** Configurable history window (`MAX_TURNS`) to preserve context efficiently.
+- **AI Provider Abstraction & Automatic Failover (Phase 5.5):**
+  - Decoupled provider layer isolating provider-specific SDK logic behind a common interface.
+  - **Primary Provider:** Google Gemini (`gemini-3.6-flash`).
+  - **Fallback Provider:** Groq (`llama-3.3-70b-versatile` via official `groq-sdk`).
+  - **Automatic Failover:** Automatically catches recoverable failures (`429` rate limits, quota exhaustion, `5xx` server errors, timeouts, network issues) and attempts Groq.
+  - **Zero Waste:** Groq is **never called** when Gemini succeeds.
+  - **Permanent Error Shield:** Non-recoverable errors (such as invalid credentials `401`/`403`) throw immediately without futile fallback.
+  - **Tool Calling Parity:** Both Gemini and Groq support local function execution through the `ToolRegistry`.
+  - **Observability:** Structured logs (`provider=gemini status=failed reason=rate_limit`, `provider=groq status=success fallback=true`) with automatic secret masking.
+  - **Zero-Quota Provider Tests:** 48 mock unit tests covering all failover edge cases without spending API credits.
 - **Pluggable Tool Registry (Phase 4C):**
-  - Domain-agnostic `ToolRegistry` class with `register()`, `unregister()`, `executeTool()`, `validateToolArguments()`, `getToolDefinitions()`.
+  - Domain-agnostic `ToolRegistry` class with `register()`, `unregister()`, `executeTool()`, `validateToolArguments()`, `getToolDefinitions()`, and `getOpenAIToolDefinitions()`.
   - Agent core has zero knowledge of specific tools — fully decoupled.
   - Tools can be added, replaced, or removed at runtime without touching `index.js`.
   - Default tools: `calculator`, `current_time`, `get_weather`.
@@ -47,8 +57,8 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 ## 🛠 Tech Stack
 
 - **Runtime:** Node.js (ES Modules)
-- **AI SDK:** `@google/genai` (Gemini API)
-- **Model:** `gemini-3.6-flash`
+- **Primary AI SDK:** `@google/genai` (Gemini API — `gemini-3.6-flash`)
+- **Fallback AI SDK:** `groq-sdk` (Groq API — `llama-3.3-70b-versatile`)
 - **Database:** Supabase (`@supabase/supabase-js`)
 - **Configuration:** `dotenv`
 
@@ -58,19 +68,24 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 ```text
 ai-agent-practice/
-├── .env.example              # Template for environment variables
+├── .env.example              # Template for environment variables (Gemini, Groq, Supabase)
 ├── .gitignore                # Git exclusion rules (node_modules, .env)
-├── config.js                 # Shared settings (model, system instructions, retry/memory limits)
+├── config.js                 # Shared settings (models, providers, retry/memory limits)
 ├── index.js                  # Main CLI entry point — domain-agnostic agent core
 ├── package.json              # Node.js dependencies and run scripts
 ├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
 ├── context-manager.js        # Smart history selection, token budgeting, and truncation
-├── tool-registry.js          # ToolRegistry class — pluggable tool management system
+├── tool-registry.js          # ToolRegistry class with Gemini and OpenAI tool definitions
 ├── tools.js                  # Default tool registrations (calculator, time, weather)
+├── providers/                # AI Provider Abstraction Layer (Phase 5.5)
+│   ├── gemini-provider.js    # Primary provider implementation (@google/genai)
+│   ├── groq-provider.js      # Fallback provider implementation (groq-sdk)
+│   └── provider-router.js    # Failover orchestrator, error classifier, observability
 ├── test.js                   # Dual-mode test runner (local tool tests + API integration tests)
 ├── test-context.js           # Context manager unit tests (trimming, tokens, truncation)
 ├── test-registry.js          # Tool registry unit tests (registration, execution, validation)
+├── test-providers.js         # Provider abstraction & failover tests (mocked, 0 API quota)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
 └── apply-schema.js           # Schema status checker for Supabase
 ```
@@ -251,6 +266,71 @@ sequenceDiagram
 
 ---
 
+## 🔀 AI Provider Abstraction & Automatic Failover (Phase 5.5)
+
+The agent features an enterprise-ready **AI Provider Abstraction Layer** with automatic failover between **Google Gemini (Primary)** and **Groq (Fallback)**.
+
+### Failover Architecture
+
+```mermaid
+graph TD
+    User([User]) --> Core["Agent Core (index.js)"]
+    Core --> Context["Context Manager (buildContext)"]
+    Context --> Router["Provider Router (provider-router.js)"]
+    Router -->|1. Try Primary| Gemini["GeminiProvider (gemini-3.6-flash)"]
+    Gemini -->|Success| Resp([Response])
+    Gemini -.->|Recoverable Error: 429, 5xx, Timeout| FallbackTrigger{"Recoverable?"}
+    FallbackTrigger -->|Yes| Groq["GroqProvider (llama-3.3-70b-versatile)"]
+    Groq --> Resp
+    FallbackTrigger -->|No: 401/403 Auth Error| Fail([Throw Error])
+```
+
+### Key Principles
+
+1. **Gemini is Primary**: All requests attempt Gemini first by default.
+2. **Groq is Fallback**: Groq is called **only** when Gemini encounters a recoverable provider error.
+3. **Zero Waste**: Groq is **never called** when Gemini succeeds. No redundant API calls.
+4. **Permanent Error Protection**: Non-recoverable errors (such as invalid API key `401` or permission denied `403`) throw immediately without futile fallback.
+5. **Tool Registry Parity**: Both providers support tool calling (`calculator`, `current_time`, `get_weather`, and future tools) through `ToolRegistry`.
+6. **Smart Context Integration**: Both providers respect the exact same token limits and payload truncations via `context-manager.js`. Neither provider receives unbounded conversation history.
+
+### Error Classification Matrix
+
+| Error Type | Status / Code | Action | Example Reason Logged |
+| :--- | :--- | :--- | :--- |
+| **Rate Limit / Quota** | `HTTP 429`, `RESOURCE_EXHAUSTED` | **Failover to Groq** | `reason=rate_limit` |
+| **Request Timeout** | `ETIMEDOUT`, `UND_ERR_CONNECT_TIMEOUT` | **Failover to Groq** | `reason=timeout` |
+| **Server Error** | `HTTP 500`, `502`, `503`, `504` | **Failover to Groq** | `reason=server_error` |
+| **Network Failure** | `ECONNRESET`, `ECONNREFUSED` | **Failover to Groq** | `reason=network_error` |
+| **Auth / Invalid Key** | `HTTP 401`, `HTTP 403` | **Do NOT Failover** (throws directly) | `reason=auth_error` |
+| **Not Found** | `HTTP 404` | **Do NOT Failover** (throws directly) | `reason=not_found` |
+
+### Switching Primary and Fallback
+
+Atlas AI allows reversing or customizing the provider hierarchy directly through environment variables without modifying Agent Core code:
+
+```bash
+# In .env:
+AI_PRIMARY_PROVIDER=groq
+AI_FALLBACK_PROVIDER=gemini
+```
+
+### Observability & Logging
+
+Lightweight, structured log events are emitted during routing without leaking sensitive credentials:
+
+```text
+# Normal successful turn:
+[ProviderRouter] provider=gemini status=success
+
+# Automatic failover upon rate limit:
+[ProviderRouter] provider=gemini status=failed reason=rate_limit
+[ProviderRouter] provider=groq status=attempting fallback=true
+[ProviderRouter] provider=groq status=success fallback=true
+```
+
+---
+
 ## 📋 Environment Variables
 
 Copy `.env.example` to `.env` and fill in your credentials:
@@ -262,14 +342,24 @@ cp .env.example .env
 Define the following variables in `.env`:
 
 ```env
-# Gemini API Key (https://aistudio.google.com/apikey)
+# AI Provider Configuration
+AI_PRIMARY_PROVIDER=gemini
+AI_FALLBACK_PROVIDER=groq
+
+# Primary AI Provider — Gemini API Key (https://aistudio.google.com/apikey)
 GEMINI_API_KEY=your_gemini_api_key
+
+# Fallback AI Provider — Groq API Key (https://console.groq.com/keys)
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=llama-3.3-70b-versatile
 
 # Supabase Credentials (https://supabase.com/dashboard -> Project Settings -> API)
 SUPABASE_URL=your_supabase_url
 SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
+> **Note:** `GROQ_API_KEY` is **optional** for normal Gemini operation. If Gemini succeeds, Groq is never initialized or called.
+>
 > **Security Warning:** Never commit `.env` or hardcode actual credentials into source code. `.env` is listed in `.gitignore`.
 
 ---
@@ -301,9 +391,21 @@ npm run test:local
 ```
 
 ### Run Tool Registry Tests (Zero API Calls)
-Tests registration, discovery, execution, validation, unregister, replacement, and domain-agnostic swap simulation:
+Tests registration, discovery, execution, validation, unregister, replacement, Gemini definitions, and OpenAI tool format:
 ```bash
 npm run test:registry
+```
+
+### Run Context Manager Tests (Zero API Calls)
+Tests token estimation, payload truncation, message deduplication, and budget trimming:
+```bash
+npm run test:context
+```
+
+### Run Provider Abstraction & Failover Tests (Zero API Calls)
+Validates all failover scenarios (429 rate limit, 5xx server errors, timeouts, auth errors, tool calling, and secret redaction) using mocked providers:
+```bash
+npm run test:providers
 ```
 
 ### Run Supabase Connection Test
@@ -341,14 +443,16 @@ npm test
 - [x] **Phase 4B: Persistent Memory** — Store conversation sessions and messages in Supabase tables with CRUD functions, non-blocking persistence, and configurable retrieval limits.
 - [x] **Phase 4C: Tool Registry** — Domain-agnostic ToolRegistry class with register/unregister/execute/validate. Agent core is fully decoupled from tool implementations.
 - [x] **Phase 5: Smart Context + Token Management** — Token estimation, configurable context budgets, deduplication, payload truncation, and observability logging.
+- [x] **Phase 5.5: AI Provider Abstraction + Gemini → Groq Failover** — Decoupled provider layer, automatic failover on recoverable errors (429, 5xx, timeouts), Groq fallback support, zero quota mock test suite.
 - [ ] **Phase 6: Advanced Tooling & RAG** — Knowledge retrieval and multi-step tool execution pipelines.
 
 ---
 
 ## 🔒 Security Notes
 
-- All errors caught during API requests mask sensitive strings like `GEMINI_API_KEY` before printing to terminal output.
+- All errors caught during API requests mask sensitive strings like `GEMINI_API_KEY` and `GROQ_API_KEY` before printing to terminal output.
 - Expression inputs to the calculator tool are sanitized against a whitelist regex to prevent code execution vulnerabilities.
 - Supabase Row Level Security (RLS) policies are enforced on database tables.
 - Persistence errors never crash the agent — they are caught and logged as warnings.
 - Tool execution is wrapped in try/catch — a crashing tool never brings down the agent.
+

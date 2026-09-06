@@ -81,6 +81,24 @@ export class ToolRegistry {
     return [{ functionDeclarations: declarations }];
   }
 
+  // ─── getOpenAIToolDefinitions() ───────────────────────────────
+  // Returns tool declarations in the format OpenAI/Groq expects:
+  //   [{ type: "function", function: { name, description, parameters } }]
+  // If no tools are registered, returns an empty array.
+  getOpenAIToolDefinitions() {
+    if (this._tools.size === 0) return [];
+
+    return [...this._tools.values()].map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+  }
+
+
   // ─── executeTool() ─────────────────────────────────────────────
   // Executes a registered tool by name with the given arguments.
   // Returns { error } if the tool is not found or crashes.

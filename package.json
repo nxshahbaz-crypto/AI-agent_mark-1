@@ -12,7 +12,8 @@
     "test:supabase": "node supabase.js",
     "test:supabase-memory": "node test-supabase-memory.js",
     "test:registry": "node test-registry.js",
-    "test:context": "node test-context.js"
+    "test:context": "node test-context.js",
+    "test:providers": "node test-providers.js"
   },
   "keywords": [
     "ai",
@@ -24,6 +25,7 @@
   "dependencies": {
     "@google/genai": "^2.18.0",
     "@supabase/supabase-js": "^2.112.3",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "groq-sdk": "^1.6.0"
   }
 }

@@ -1,53 +1,49 @@
 import "dotenv/config";
-import { GoogleGenAI } from "@google/genai";
 import readline from "readline";
 import {
-  SYSTEM_INSTRUCTION, MODEL, MAX_TURNS,
-  MAX_RETRIES, BASE_DELAY_MS, MAX_DELAY_MS,
-  MAX_CONTEXT_TOKENS, MAX_OUTPUT_TOKENS, MAX_TOOL_PAYLOAD_SIZE
+  SYSTEM_INSTRUCTION,
+  MAX_TURNS,
+  MAX_CONTEXT_TOKENS,
+  MAX_OUTPUT_TOKENS,
+  AI_PRIMARY_PROVIDER,
+  AI_FALLBACK_PROVIDER,
 } from "./config.js";
 import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
-import { buildContext, truncatePayload, estimateTokens } from "./context-manager.js";
+import { buildContext, estimateTokens } from "./context-manager.js";
+import { createDefaultRouter, sanitizeErrorMessage } from "./providers/provider-router.js";
 
-// ─── Configuration ───────────────────────────────────────────────
-const API_KEY = process.env.GEMINI_API_KEY;
+// ─── Configuration Validation ───────────────────────────────────
+// Primary provider key is required; fallback key is optional unless invoked.
+const primaryProvider = AI_PRIMARY_PROVIDER || "gemini";
+const fallbackProvider = AI_FALLBACK_PROVIDER || "groq";
 
-if (!API_KEY || API_KEY === "your_api_key_here") {
-  console.error("❌ Missing GEMINI_API_KEY. Add it to your .env file.");
-  console.error("   Get one at: https://aistudio.google.com/apikey");
-  process.exit(1);
+if (primaryProvider === "gemini") {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey || geminiKey === "your_api_key_here" || geminiKey === "your_gemini_api_key") {
+    console.error("❌ Missing GEMINI_API_KEY. Add it to your .env file.");
+    console.error("   Get one at: https://aistudio.google.com/apikey");
+    process.exit(1);
+  }
+} else if (primaryProvider === "groq") {
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey || groqKey === "your_groq_api_key") {
+    console.error("❌ Missing GROQ_API_KEY. Add it to your .env file.");
+    console.error("   Get one at: https://console.groq.com/keys");
+    process.exit(1);
+  }
 }
 
-// Initialize the Gemini client
-const ai = new GoogleGenAI({ apiKey: API_KEY });
+// Initialize the Provider Router (Gemini primary -> Groq fallback)
+const router = createDefaultRouter();
 
 // ─── Conversation Memory ─────────────────────────────────────────
 // In-memory history for the current session; also persisted to Supabase.
-// Only the last MAX_TURNS are sent to Gemini.
+// Only the budget-managed context is sent to the active provider.
 const conversationHistory = [];
 
 // Active Supabase conversation ID (set during startup)
 let activeConversationId = null;
-
-// ─── Exponential Backoff ─────────────────────────────────────────
-// Wraps chat.sendMessage with retry logic for HTTP 429 rate limits.
-// Delays: 2s → 4s → 8s (capped at 30s). Gives up after MAX_RETRIES.
-async function sendWithRetry(chat, params) {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      return await chat.sendMessage(params);
-    } catch (error) {
-      if (error.status === 429 && attempt < MAX_RETRIES) {
-        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_DELAY_MS);
-        console.log(`  ⏳ Rate limited. Retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${MAX_RETRIES})`);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      throw error; // Re-throw non-429 errors or if retries exhausted
-    }
-  }
-}
 
 // ─── Terminal Interface ──────────────────────────────────────────
 const rl = readline.createInterface({
@@ -57,31 +53,6 @@ const rl = readline.createInterface({
 
 function ask(question) {
   return new Promise((resolve) => rl.question(question, resolve));
-}
-
-// ─── Tool Call Handler ───────────────────────────────────────────
-// Processes Gemini's function call requests, executes tools, sends
-// results back, and loops until Gemini gives a text response.
-async function handleToolCalls(chat, response) {
-  while (response.functionCalls && response.functionCalls.length > 0) {
-    const toolParts = response.functionCalls.map((fc) => {
-      console.log(`  🔧 Tool call: ${fc.name}(${JSON.stringify(fc.args || {})})`);
-      const rawResult = registry.executeTool(fc.name, fc.args || {});
-      const result = truncatePayload(rawResult, MAX_TOOL_PAYLOAD_SIZE);
-      console.log(`  📦 Result: ${JSON.stringify(result)}`);
-      return {
-        functionResponse: {
-          id: fc.id,
-          name: fc.name,
-          response: result,
-        },
-      };
-    });
-
-    // Send tool results back to Gemini with retry protection
-    response = await sendWithRetry(chat, { message: toolParts });
-  }
-  return response;
 }
 
 // ─── Persistence Helper ─────────────────────────────────────────
@@ -97,11 +68,12 @@ function persistMessage(role, content) {
 
 // ─── Main Chat Loop ─────────────────────────────────────────────
 async function main() {
-  console.log("╔══════════════════════════════════════════╗");
-  console.log("║   🤖  Atlas AI  —  Phase 4C (Registry)  ║");
-  console.log("║   Type your message and press Enter.     ║");
-  console.log("║   Type 'exit' to quit.                   ║");
-  console.log("╚══════════════════════════════════════════╝");
+  console.log("╔══════════════════════════════════════════════════════════╗");
+  console.log("║   🤖  Atlas AI  —  Phase 5.5 (Provider Abstraction)     ║");
+  console.log(`║   Primary: ${primaryProvider.padEnd(10)} Fallback: ${fallbackProvider.padEnd(23)}║`);
+  console.log("║   Type your message and press Enter.                     ║");
+  console.log("║   Type 'exit' to quit.                                   ║");
+  console.log("╚══════════════════════════════════════════════════════════╝");
   console.log();
 
   // ── Initialize Supabase conversation ──
@@ -112,7 +84,6 @@ async function main() {
     console.log(`   ID: ${activeConversationId}\n`);
 
     // Optionally load recent messages from previous sessions
-    // (useful if resuming — for now we start fresh each session)
     const recentFromDb = await getRecentMessages(activeConversationId, MAX_TURNS * 2);
     if (recentFromDb.length > 0) {
       for (const msg of recentFromDb) {
@@ -149,31 +120,25 @@ async function main() {
       const userMsgTokens = estimateTokens({ role: "user", parts: [{ text: userInput }] });
       const availableBudget = Math.max(0, MAX_CONTEXT_TOKENS - userMsgTokens);
 
-      // Manage context budget
+      // Manage context budget (applies equally to Gemini and Groq)
       const { context, stats } = buildContext(conversationHistory, availableBudget);
 
-      console.log(`  📊 Context: ${stats.sent}/${stats.considered} msgs | ~${stats.estimatedTokens + userMsgTokens} tokens | Trimmed: ${stats.trimmed ? "Yes" : "No"} | Tools: ${stats.toolResultsIncluded}`);
+      console.log(
+        `  📊 Context: ${stats.sent}/${stats.considered} msgs | ~${stats.estimatedTokens + userMsgTokens} tokens | Trimmed: ${stats.trimmed ? "Yes" : "No"} | Tools: ${stats.toolResultsIncluded}`
+      );
 
-      // Create chat with system instruction, tools, and recent history
-      const chat = ai.chats.create({
-        model: MODEL,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          tools: registry.getToolDefinitions(),
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
-        },
+      // Send message through provider router (automatic failover if primary encounters recoverable error)
+      const response = await router.sendMessage({
+        message: userInput,
         history: context,
+        systemInstruction: SYSTEM_INSTRUCTION,
+        registry,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
       });
-
-      // Send message to Gemini (with retry on 429)
-      let response = await sendWithRetry(chat, { message: userInput });
-
-      // If Gemini requested tool calls, handle them
-      response = await handleToolCalls(chat, response);
 
       const replyText = response.text;
 
-      // Append both user and model messages to in-memory history (no duplicates)
+      // Append both user and model messages to in-memory history
       conversationHistory.push(
         { role: "user", parts: [{ text: userInput }] },
         { role: "model", parts: [{ text: replyText }] }
@@ -185,19 +150,16 @@ async function main() {
 
       console.log(`\nAtlas: ${replyText}\n`);
     } catch (error) {
-      // Sanitize error message — never expose API key or env vars
-      const safeMessage = (error.message || "Unknown error")
-        .replace(process.env.GEMINI_API_KEY, "[REDACTED]")
-        .replace(/key=[^&\s]+/gi, "key=[REDACTED]");
+      const safeMessage = sanitizeErrorMessage(error.message || "Unknown error");
 
       if (error.status === 401 || error.status === 403) {
-        console.error("\n❌ Authentication failed. Check your GEMINI_API_KEY in .env.\n");
+        console.error("\n❌ Authentication failed. Check your API credentials in .env.\n");
       } else if (error.status === 404) {
         console.error("\n❌ Model not found. The model name may be invalid or unavailable.\n");
       } else if (error.status === 429) {
-        console.error("\n⏳ Rate limit reached after all retries. Please wait a minute and try again.\n");
+        console.error("\n⏳ Rate limit reached on all available providers. Please wait and try again.\n");
       } else {
-        console.error(`\n❌ Gemini API error: ${safeMessage}\n`);
+        console.error(`\n❌ AI Provider error: ${safeMessage}\n`);
       }
     }
   }
