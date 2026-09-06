@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS public._health_check (
 
 ALTER TABLE public._health_check ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Allow public read access to health check" ON public._health_check;
+DROP POLICY IF EXISTS "Allow public read access to health_check" ON public._health_check;
 CREATE POLICY "Allow public read access to health check"
   ON public._health_check
   FOR SELECT
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS public.conversations (
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 
 -- Development-only: allow full CRUD via anon key (no auth yet)
+DROP POLICY IF EXISTS "Allow full access to conversations (dev)" ON public.conversations;
 CREATE POLICY "Allow full access to conversations (dev)"
   ON public.conversations
   FOR ALL
@@ -50,6 +53,7 @@ CREATE TABLE IF NOT EXISTS public.messages (
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 
 -- Development-only: allow full CRUD via anon key (no auth yet)
+DROP POLICY IF EXISTS "Allow full access to messages (dev)" ON public.messages;
 CREATE POLICY "Allow full access to messages (dev)"
   ON public.messages
   FOR ALL
@@ -83,6 +87,7 @@ CREATE TABLE IF NOT EXISTS public.knowledge_chunks (
 ALTER TABLE public.knowledge_chunks ENABLE ROW LEVEL SECURITY;
 
 -- Development-only: allow full CRUD via anon key (no auth yet)
+DROP POLICY IF EXISTS "Allow full access to knowledge_chunks (dev)" ON public.knowledge_chunks;
 CREATE POLICY "Allow full access to knowledge_chunks (dev)"
   ON public.knowledge_chunks
   FOR ALL
