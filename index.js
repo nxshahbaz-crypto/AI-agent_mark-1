@@ -9,12 +9,14 @@ import {
   AI_FALLBACK_PROVIDER,
   AI_FORCE_PRIMARY_FAILURE,
   MAX_AGENT_STEPS,
+  RAG_ENABLED,
 } from "./config.js";
 import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
 import { buildContext, estimateTokens } from "./context-manager.js";
 import { createDefaultRouter, sanitizeErrorMessage } from "./providers/provider-router.js";
 import { Agent } from "./agent.js";
+import { retrieveKnowledge, formatAugmentedPrompt } from "./rag/index.js";
 
 // ─── Configuration Validation ───────────────────────────────────
 // Primary provider key is required; fallback key is optional unless invoked.
@@ -147,9 +149,28 @@ async function main() {
         `  📊 Context: ${stats.sent}/${stats.considered} msgs | ~${stats.estimatedTokens + userMsgTokens} tokens | Trimmed: ${stats.trimmed ? "Yes" : "No"} | Tools: ${stats.toolResultsIncluded}`
       );
 
+      // Retrieve knowledge context if RAG is enabled
+      let agentPrompt = userInput;
+      let retrievedChunks = [];
+
+      if (RAG_ENABLED) {
+        try {
+          const ragResult = await retrieveKnowledge(userInput);
+          if (ragResult && ragResult.chunks && ragResult.chunks.length > 0) {
+            retrievedChunks = ragResult.chunks;
+            agentPrompt = formatAugmentedPrompt(userInput, retrievedChunks);
+            console.log(
+              `  📚 RAG: ${retrievedChunks.length} chunk(s) retrieved | ~${ragResult.tokenEstimate} tokens | Top match: ${(retrievedChunks[0].similarity * 100).toFixed(1)}%`
+            );
+          }
+        } catch (ragErr) {
+          console.warn(`  ⚠️ RAG retrieval skipped: ${ragErr.message}`);
+        }
+      }
+
       // Execute multi-step agent planning loop
       const response = await agent.run({
-        message: userInput,
+        message: agentPrompt,
         history: context,
       });
 

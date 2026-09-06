@@ -19,8 +19,15 @@ export const AI_FORCE_PRIMARY_FAILURE = process.env.AI_FORCE_PRIMARY_FAILURE ===
 // Agent Planning Configuration (Phase 6)
 export const MAX_AGENT_STEPS = 5; // Maximum tool execution steps per user request
 
-
-
+// RAG / Knowledge Base Configuration (Phase 7)
+export const RAG_ENABLED = process.env.RAG_ENABLED !== "false";
+export const RAG_TOP_K = parseInt(process.env.RAG_TOP_K || "3", 10);
+export const RAG_SIMILARITY_THRESHOLD = parseFloat(process.env.RAG_SIMILARITY_THRESHOLD || "0.5");
+export const RAG_MAX_CONTEXT_TOKENS = parseInt(process.env.RAG_MAX_CONTEXT_TOKENS || "800", 10);
+export const RAG_CHUNK_SIZE = parseInt(process.env.RAG_CHUNK_SIZE || "500", 10);
+export const RAG_CHUNK_OVERLAP = parseInt(process.env.RAG_CHUNK_OVERLAP || "100", 10);
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "gemini-embedding-2";
+export const EMBEDDING_DIMENSION = 768; // Matched to vector(768) in Supabase schema
 
 export const SYSTEM_INSTRUCTION = `You are Atlas, a helpful AI assistant built as a practice project.
 

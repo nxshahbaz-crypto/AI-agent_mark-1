@@ -21,6 +21,14 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 - **Interactive CLI Interface:** Multi-turn conversation loop in the terminal.
 - **Sliding-Window Memory:** Configurable history window (`MAX_TURNS`) to preserve context efficiently.
+- **RAG / Knowledge Base (Phase 7):**
+  - **Vector Similarity Search:** Stores chunks and 768-dimensional embeddings in Supabase using `pgvector` and HNSW indexing.
+  - **Current Embedding Model:** Uses Google's `gemini-embedding-2` model configured with `outputDimensionality: 768`.
+  - **Document Ingestion Pipeline:** Splits raw text/markdown into overlapping boundary-aware chunks with zero LLM summarization.
+  - **Top-K & Similarity Threshold:** Retrieves only the most relevant chunks exceeding `RAG_SIMILARITY_THRESHOLD` (default: 0.5).
+  - **Context Budget Protection:** Caps injected knowledge chunks at `RAG_MAX_CONTEXT_TOKENS` (default: 800) to prevent blowing the model context window.
+  - **Clean History Preservation:** Injected knowledge context is provided ephemerally to the agent without polluting conversation history tables.
+  - **Zero-Quota RAG Tests:** 49 mock unit tests covering chunking, ingestion, 768-dim embeddings, retrieval, thresholds, empty results, and token limits.
 - **Multi-Step Agent Planning (Phase 6):**
   - **Sequential & Dependent Tool Execution:** Agent orchestrates multi-step tool execution loops where outputs from one tool can inform subsequent tool calls.
   - **Parallel Independent Tool Calls:** Capable of handling multiple tool requests in a single step (e.g., weather lookup + arithmetic calculation) and synthesizing a unified response.
@@ -64,9 +72,9 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 ## 🛠 Tech Stack
 
 - **Runtime:** Node.js (ES Modules)
-- **Primary AI SDK:** `@google/genai` (Gemini API — `gemini-3.6-flash`)
+- **Primary AI SDK:** `@google/genai` (Gemini API — `gemini-3.6-flash`, Embeddings — `gemini-embedding-2`)
 - **Fallback AI SDK:** `groq-sdk` (Groq API — `llama-3.3-70b-versatile`)
-- **Database:** Supabase (`@supabase/supabase-js`)
+- **Database & Vector Store:** Supabase (`@supabase/supabase-js`, PostgreSQL with `pgvector`)
 - **Configuration:** `dotenv`
 
 ---
@@ -75,13 +83,14 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 ```text
 ai-agent-practice/
-├── .env.example              # Template for environment variables (Gemini, Groq, Supabase)
+├── .env.example              # Template for environment variables (Gemini, Groq, Supabase, RAG)
 ├── .gitignore                # Git exclusion rules (node_modules, .env)
-├── config.js                 # Shared settings (models, providers, retry/memory limits, MAX_AGENT_STEPS)
+├── config.js                 # Shared settings (models, providers, limits, MAX_AGENT_STEPS, RAG)
 ├── index.js                  # Main CLI entry point — terminal interaction loop
 ├── agent.js                  # Multi-step agent loop orchestrator (Phase 6)
+├── ingest.js                 # CLI utility to ingest files into the knowledge base (Phase 7)
 ├── package.json              # Node.js dependencies and run scripts
-├── schema.sql                # SQL schema for Supabase (health_check, conversations, messages)
+├── schema.sql                # SQL schema for Supabase (conversations, messages, pgvector knowledge_chunks)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
 ├── context-manager.js        # Smart history selection, token budgeting, and truncation
 ├── tool-registry.js          # ToolRegistry class with Gemini and OpenAI tool definitions
@@ -90,11 +99,18 @@ ai-agent-practice/
 │   ├── gemini-provider.js    # Primary provider implementation (@google/genai)
 │   ├── groq-provider.js      # Fallback provider implementation (groq-sdk)
 │   └── provider-router.js    # Failover orchestrator, error classifier, observability
+├── rag/                      # RAG & Knowledge Base Subsystem (Phase 7)
+│   ├── chunker.js            # Boundary-aware text chunking without LLM summarization
+│   ├── embeddings.js         # gemini-embedding-2 generation (768 dims) + zero-quota mock
+│   ├── ingestion.js          # Ingest documents into Supabase knowledge_chunks table
+│   ├── retriever.js          # Top-k vector retrieval, similarity filter, context protection
+│   └── index.js              # Unified exports for RAG module
 ├── test.js                   # Dual-mode test runner (local tool tests + API integration tests)
 ├── test-context.js           # Context manager unit tests (trimming, tokens, truncation)
 ├── test-registry.js          # Tool registry unit tests (registration, execution, validation)
 ├── test-providers.js         # Provider abstraction & failover tests (mocked, 0 API quota)
 ├── test-agent.js             # Multi-step agent planning unit tests (mocked, 0 API quota)
+├── test-rag.js               # RAG / Knowledge Base unit tests (mocked, 0 API quota)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
 └── apply-schema.js           # Schema status checker for Supabase
 ```
@@ -239,7 +255,79 @@ Atlas AI uses two Supabase tables for persistent conversation memory:
 **RLS:** Development-mode policies allow full access via `anon` and `authenticated` roles. Authentication will be added in a later phase.
 
 ### Setup
-Run the `schema.sql` file in your Supabase SQL Editor to create all tables, policies, and indexes.
+Run the `schema.sql` file in your Supabase SQL Editor to create all tables, policies, vector extensions, indexes, and stored procedures.
+
+---
+
+## 📚 RAG / Knowledge Base (Phase 7)
+
+Atlas AI includes a **Retrieval-Augmented Generation (RAG)** pipeline allowing the agent to answer questions grounded in private or domain-specific documentation using **Supabase + pgvector**.
+
+### RAG Architecture & Retrieval Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as index.js
+    participant Chunker as rag/chunker.js
+    participant Embed as rag/embeddings.js (gemini-embedding-2)
+    participant DB as Supabase (pgvector)
+    participant Ret as rag/retriever.js
+    participant Agent as Agent (agent.js)
+
+    Note over Chunker,DB: Ingestion Phase (node ingest.js)
+    Chunker->>Embed: Document chunks (500 chars, 100 overlap)
+    Embed->>DB: Store chunks + 768-dim embeddings in knowledge_chunks
+
+    Note over User,Agent: Query & Retrieval Phase
+    User->>CLI: "What is the refund policy for Atlas AI?"
+    CLI->>Ret: retrieveKnowledge(query)
+    Ret->>Embed: generateEmbedding(query, outputDimensionality=768)
+    Embed-->>Ret: 768-dim query vector
+    Ret->>DB: rpc('match_knowledge_chunks', { query_embedding, threshold: 0.5, topK: 3 })
+    DB-->>Ret: Matching chunks with similarity scores
+    Ret-->>CLI: Top relevant chunks (capped at RAG_MAX_CONTEXT_TOKENS)
+    CLI->>Agent: agent.run({ message: augmentedPromptWithKnowledge, history })
+    Agent-->>CLI: Synthesized response grounded in documentation
+    CLI-->>User: "According to Atlas AI policy, refunds are processed within 14 days..."
+```
+
+### Key Capabilities
+
+1. **Supabase & pgvector Vector Store:**
+   - Text chunks and embeddings are stored in `public.knowledge_chunks`.
+   - Uses an **HNSW vector index** (`vector_cosine_ops`) for fast similarity lookup.
+   - Database RPC function `match_knowledge_chunks` calculates cosine similarity (`1 - (embedding <=> query_embedding)`).
+
+2. **Current Embedding Model (`gemini-embedding-2`):**
+   - Uses Google's current `gemini-embedding-2` model via `@google/genai`.
+   - Explicitly configured with `outputDimensionality: 768` matching `embedding vector(768)` in the database schema.
+   - Provides a deterministic 768-dimensional mock embedding generator for unit tests (zero Gemini API quota consumed).
+
+3. **Domain-Agnostic Chunking Pipeline:**
+   - Splits documents on natural linguistic boundaries (paragraphs, lines, sentences, words).
+   - Configurable chunk size (`RAG_CHUNK_SIZE = 500`) and overlap (`RAG_CHUNK_OVERLAP = 100`).
+   - **No LLM summarization** during ingestion to preserve raw factual integrity.
+
+4. **Relevance Thresholding & Context Budget Protection:**
+   - Filters out chunks below `RAG_SIMILARITY_THRESHOLD` (default: `0.5`).
+   - Limits total injected context to `RAG_MAX_CONTEXT_TOKENS` (default: `800` tokens).
+
+5. **Clean History & Graceful Degradation:**
+   - Injected knowledge context is provided ephemerally to the model turn prompt; the user's clean prompt is preserved in Supabase and memory history to prevent multi-turn token bloat.
+   - If no relevant chunks match, Atlas gracefully answers using its existing tools and conversational knowledge.
+
+### Ingestion CLI (`ingest.js`)
+
+To ingest documents into the knowledge base:
+
+```bash
+# Ingest the built-in sample handbook:
+node ingest.js --sample
+
+# Ingest any custom text or markdown file:
+node ingest.js path/to/faq.txt custom-doc-id
+```
 
 ---
 
@@ -483,6 +571,12 @@ Validates single-step, parallel independent tools, sequential dependent tools, m
 npm run test:agent
 ```
 
+### Run RAG / Knowledge Base Tests (Zero API Calls)
+Validates chunking boundaries, 768-dimensional embeddings, ingestion, top-k vector retrieval, similarity threshold filtering, empty results handling, context limit protection, and agent prompt formatting using mocked providers:
+```bash
+npm run test:rag
+```
+
 ### Run Supabase Connection Test
 Verifies environment variables and tests connectivity to Supabase:
 ```bash
@@ -520,7 +614,8 @@ npm test
 - [x] **Phase 5: Smart Context + Token Management** — Token estimation, configurable context budgets, deduplication, payload truncation, and observability logging.
 - [x] **Phase 5.5: AI Provider Abstraction + Gemini → Groq Failover** — Decoupled provider layer, automatic failover on recoverable errors (429, 5xx, timeouts), Groq fallback support, zero quota mock test suite.
 - [x] **Phase 6: Multi-Step Agent Planning** — Autonomous multi-step orchestration loop, parallel and sequential/dependent tool calling, max step limit (5), unrecoverable error halting, and mid-task provider failover.
-- [ ] **Phase 7: Advanced Tooling & RAG** — Knowledge retrieval and vector embeddings.
+- [x] **Phase 7: RAG / Knowledge Base** — Supabase pgvector storage, gemini-embedding-2 (768 dims), boundary-aware chunking, top-k vector retrieval, similarity thresholding, context limit safeguards, and ingestion CLI.
+- [ ] **Phase 8: Production Deployment & Web UI** — Web interface and serverless deployment.
 
 ---
 

@@ -61,3 +61,74 @@ CREATE POLICY "Allow full access to messages (dev)"
 -- Speeds up "get recent messages for a conversation" queries.
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
   ON public.messages (conversation_id, created_at);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- Phase 7 — RAG / Knowledge Base (pgvector)
+-- ═══════════════════════════════════════════════════════════════════
+
+-- ─── Enable pgvector Extension ────────────────────────────────────
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ─── Knowledge Chunks Table ───────────────────────────────────────
+-- Stores text chunks and their 768-dimensional embeddings.
+CREATE TABLE IF NOT EXISTS public.knowledge_chunks (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  document_id text NOT NULL,
+  content text NOT NULL,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  embedding vector(768),
+  created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE public.knowledge_chunks ENABLE ROW LEVEL SECURITY;
+
+-- Development-only: allow full CRUD via anon key (no auth yet)
+CREATE POLICY "Allow full access to knowledge_chunks (dev)"
+  ON public.knowledge_chunks
+  FOR ALL
+  TO anon, authenticated
+  USING (true)
+  WITH CHECK (true);
+
+-- ─── Vector Index ─────────────────────────────────────────────────
+-- HNSW index for fast cosine distance similarity queries.
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding
+  ON public.knowledge_chunks
+  USING hnsw (embedding vector_cosine_ops);
+
+-- Document index for fast document-level lookups and deletes.
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document_id
+  ON public.knowledge_chunks (document_id);
+
+-- ─── match_knowledge_chunks RPC Function ─────────────────────────
+-- Performs cosine similarity vector search and returns top matches.
+CREATE OR REPLACE FUNCTION match_knowledge_chunks (
+  query_embedding vector(768),
+  match_threshold float,
+  match_count int
+)
+RETURNS TABLE (
+  id uuid,
+  document_id text,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+LANGUAGE plpgsql
+STABLE
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    knowledge_chunks.id,
+    knowledge_chunks.document_id,
+    knowledge_chunks.content,
+    knowledge_chunks.metadata,
+    1 - (knowledge_chunks.embedding <=> query_embedding) AS similarity
+  FROM knowledge_chunks
+  WHERE 1 - (knowledge_chunks.embedding <=> query_embedding) >= match_threshold
+  ORDER BY knowledge_chunks.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
+

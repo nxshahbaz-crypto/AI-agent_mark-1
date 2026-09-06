@@ -14,7 +14,8 @@
     "test:registry": "node test-registry.js",
     "test:context": "node test-context.js",
     "test:providers": "node test-providers.js",
-    "test:agent": "node test-agent.js"
+    "test:agent": "node test-agent.js",
+    "test:rag": "node test-rag.js"
   },
   "keywords": [
     "ai",
