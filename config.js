@@ -14,6 +14,8 @@ export const MAX_TOOL_PAYLOAD_SIZE = 1000; // Max characters for tool results
 export const AI_PRIMARY_PROVIDER = process.env.AI_PRIMARY_PROVIDER || "gemini";
 export const AI_FALLBACK_PROVIDER = process.env.AI_FALLBACK_PROVIDER || "groq";
 export const GROQ_DEFAULT_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+export const AI_FORCE_PRIMARY_FAILURE = process.env.AI_FORCE_PRIMARY_FAILURE === "true";
+
 
 
 export const SYSTEM_INSTRUCTION = `You are Atlas, a helpful AI assistant built as a practice project.

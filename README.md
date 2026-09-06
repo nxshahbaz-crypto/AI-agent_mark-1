@@ -329,6 +329,21 @@ Lightweight, structured log events are emitted during routing without leaking se
 [ProviderRouter] provider=groq status=success fallback=true
 ```
 
+### 🧪 Development Failover Verification (`AI_FORCE_PRIMARY_FAILURE`)
+
+To test the live wiring of the Groq fallback without waiting for a real Gemini rate limit or spending Gemini API quota, set:
+
+```bash
+# In .env:
+AI_FORCE_PRIMARY_FAILURE=true
+```
+
+When enabled:
+- The Provider Router simulates a recoverable `503 Service Unavailable` error on the primary provider **before** making any network request to Gemini.
+- Gemini API quota consumption is **0**.
+- The router automatically falls back to Groq and executes a real Groq call.
+- Safe for development and defaults to `false`.
+
 ---
 
 ## 📋 Environment Variables
@@ -346,6 +361,10 @@ Define the following variables in `.env`:
 AI_PRIMARY_PROVIDER=gemini
 AI_FALLBACK_PROVIDER=groq
 
+# Safe Failover Test Flag (Development only, default: false)
+# Set to true to simulate a recoverable 503 error on primary without consuming Gemini quota
+AI_FORCE_PRIMARY_FAILURE=false
+
 # Primary AI Provider — Gemini API Key (https://aistudio.google.com/apikey)
 GEMINI_API_KEY=your_gemini_api_key
 
@@ -361,6 +380,7 @@ SUPABASE_ANON_KEY=your_supabase_anon_key
 > **Note:** `GROQ_API_KEY` is **optional** for normal Gemini operation. If Gemini succeeds, Groq is never initialized or called.
 >
 > **Security Warning:** Never commit `.env` or hardcode actual credentials into source code. `.env` is listed in `.gitignore`.
+
 
 ---
 

@@ -418,6 +418,49 @@ function testSecretRedaction() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 7. SAFE FAILOVER DEV FLAG (AI_FORCE_PRIMARY_FAILURE)
+// ═══════════════════════════════════════════════════════════════════
+async function testForcePrimaryFailureDevFlag() {
+  console.log("\n🧪 7. AI_FORCE_PRIMARY_FAILURE DEV FLAG TESTS\n" + "═".repeat(55));
+
+  // Case A: forcePrimaryFailure is true -> Primary is NEVER called, Groq is called
+  const mockGeminiUncalled = new MockProvider("gemini", { text: "Should never be called", provider: "gemini", toolCalls: [] });
+  const mockGroqFallback = new MockProvider("groq", { text: "Groq response via forced failover", provider: "groq", toolCalls: [] });
+
+  const forcedRouter = new ProviderRouter({
+    primary: "gemini",
+    fallback: "groq",
+    forcePrimaryFailure: true,
+    providers: { gemini: mockGeminiUncalled, groq: mockGroqFallback },
+  });
+
+  const res = await forcedRouter.sendMessage({ message: "Dev test message" });
+  assert("Primary provider was NOT called (zero Gemini quota)", mockGeminiUncalled.calls.length === 0);
+  assert("Fallback Groq was called exactly once", mockGroqFallback.calls.length === 1);
+  assert("Response text came from Groq", res.text === "Groq response via forced failover");
+  assert("Response provider is groq", res.provider === "groq");
+  assert("Response fallback is true", res.fallback === true);
+  assert("Response fallbackReason is server_error (503)", res.fallbackReason === "server_error");
+
+  // Case B: forcePrimaryFailure is false -> Primary IS called, Groq is NOT called
+  const mockGeminiNormal = new MockProvider("gemini", { text: "Normal Gemini response", provider: "gemini", toolCalls: [] });
+  const mockGroqNormal = new MockProvider("groq", { text: "Should never be called", provider: "groq", toolCalls: [] });
+
+  const normalRouter = new ProviderRouter({
+    primary: "gemini",
+    fallback: "groq",
+    forcePrimaryFailure: false,
+    providers: { gemini: mockGeminiNormal, groq: mockGroqNormal },
+  });
+
+  const normalRes = await normalRouter.sendMessage({ message: "Normal message" });
+  assert("Normal router calls primary", mockGeminiNormal.calls.length === 1);
+  assert("Normal router does NOT call fallback", mockGroqNormal.calls.length === 0);
+  assert("Normal response provider is gemini", normalRes.provider === "gemini");
+  assert("Normal response fallback is false", normalRes.fallback === false);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Main Runner
 // ═══════════════════════════════════════════════════════════════════
 async function main() {
@@ -427,6 +470,7 @@ async function main() {
   await testToolCallingParity();
   await testContextManagerIntegration();
   testSecretRedaction();
+  await testForcePrimaryFailureDevFlag();
 
   console.log("\n" + "═".repeat(55));
   console.log(`📊 Provider Tests: ${passed} passed, ${failed} failed`);
@@ -436,3 +480,4 @@ async function main() {
 }
 
 main();
+

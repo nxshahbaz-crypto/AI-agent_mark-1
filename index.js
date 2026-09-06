@@ -7,6 +7,7 @@ import {
   MAX_OUTPUT_TOKENS,
   AI_PRIMARY_PROVIDER,
   AI_FALLBACK_PROVIDER,
+  AI_FORCE_PRIMARY_FAILURE,
 } from "./config.js";
 import { registry } from "./tools.js";
 import { createConversation, saveMessage, getRecentMessages } from "./supabase.js";
@@ -76,7 +77,16 @@ async function main() {
   console.log("╚══════════════════════════════════════════════════════════╝");
   console.log();
 
+  if (AI_FORCE_PRIMARY_FAILURE) {
+    console.log("🧪 DEV MODE: AI_FORCE_PRIMARY_FAILURE=true");
+    console.log("   Primary calls will simulate recoverable 503 errors to test Groq fallback without Gemini quota.\n");
+    if (!process.env.GROQ_API_KEY || process.env.GROQ_API_KEY === "your_groq_api_key") {
+      console.warn("⚠️  Warning: GROQ_API_KEY is not set in .env. Groq fallback will fail until a key is added.\n");
+    }
+  }
+
   // ── Initialize Supabase conversation ──
+
   try {
     const conversation = await createConversation();
     activeConversationId = conversation.id;

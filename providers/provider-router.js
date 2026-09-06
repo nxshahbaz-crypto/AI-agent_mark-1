@@ -12,7 +12,8 @@
 
 import { GeminiProvider } from "./gemini-provider.js";
 import { GroqProvider } from "./groq-provider.js";
-import { AI_PRIMARY_PROVIDER, AI_FALLBACK_PROVIDER } from "../config.js";
+import { AI_PRIMARY_PROVIDER, AI_FALLBACK_PROVIDER, AI_FORCE_PRIMARY_FAILURE } from "../config.js";
+
 
 /**
  * Classifies an error to determine whether automatic failover is appropriate.
@@ -130,6 +131,10 @@ export class ProviderRouter {
     this.primaryProviderName = options.primary || AI_PRIMARY_PROVIDER || "gemini";
     this.fallbackProviderName = options.fallback || AI_FALLBACK_PROVIDER || "groq";
     this.providers = options.providers || {};
+    this.forcePrimaryFailure =
+      options.forcePrimaryFailure !== undefined
+        ? options.forcePrimaryFailure
+        : AI_FORCE_PRIMARY_FAILURE;
   }
 
   /**
@@ -161,8 +166,22 @@ export class ProviderRouter {
       throw new Error(`Primary provider "${this.primaryProviderName}" is not registered.`);
     }
 
-    // 1. Attempt primary provider
+    // 1. Attempt primary provider (or simulate recoverable failure in dev mode)
     try {
+      const shouldForceFail =
+        this.forcePrimaryFailure || process.env.AI_FORCE_PRIMARY_FAILURE === "true";
+
+      if (shouldForceFail) {
+        console.log(
+          `  🧪 [DEV MODE] Simulating recoverable 503 error for "${this.primaryProviderName}" (AI_FORCE_PRIMARY_FAILURE=true)`
+        );
+        const simulatedError = new Error(
+          `Simulated recoverable provider failure for ${this.primaryProviderName} (AI_FORCE_PRIMARY_FAILURE=true)`
+        );
+        simulatedError.status = 503;
+        throw simulatedError;
+      }
+
       const result = await primary.sendMessage(params);
       logProviderEvent({ provider: this.primaryProviderName, status: "success" });
       return {
@@ -171,6 +190,7 @@ export class ProviderRouter {
         fallback: false,
       };
     } catch (primaryError) {
+
       const classification = classifyError(primaryError);
       logProviderEvent({
         provider: this.primaryProviderName,
