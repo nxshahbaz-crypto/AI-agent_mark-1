@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { fileURLToPath } from "url";
 import {
   SYSTEM_INSTRUCTION,
   MAX_TURNS,
@@ -450,9 +451,10 @@ let sessionHistory = [];
 let currentActiveConversationId = inMemoryConversations[0].id;
 
 // ─── API Routes ────────────────────────────────────────────────
+const apiRouter = express.Router();
 
 // 1. System Status
-app.get("/api/status", async (req, res) => {
+apiRouter.get("/status", async (req, res) => {
   let supabaseStatus = { ok: false, message: "Unchecked" };
   try {
     supabaseStatus = await testConnection();
@@ -496,7 +498,7 @@ app.get("/api/status", async (req, res) => {
 });
 
 // 2. Switch Provider / Toggle Failover
-app.post("/api/provider/switch", (req, res) => {
+apiRouter.post("/provider/switch", (req, res) => {
   const { provider, forceFailure } = req.body;
   if (provider && (provider === "gemini" || provider === "groq")) {
     activePrimary = provider;
@@ -524,7 +526,7 @@ app.post("/api/provider/switch", (req, res) => {
 });
 
 // 3. List Conversations
-app.get("/api/conversations", async (req, res) => {
+apiRouter.get("/conversations", async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("conversations")
@@ -543,7 +545,7 @@ app.get("/api/conversations", async (req, res) => {
 });
 
 // 4. Get Messages for a Conversation
-app.get("/api/conversations/:id/messages", async (req, res) => {
+apiRouter.get("/conversations/:id/messages", async (req, res) => {
   const { id } = req.params;
   currentActiveConversationId = id;
 
@@ -573,7 +575,7 @@ app.get("/api/conversations/:id/messages", async (req, res) => {
 });
 
 // 5. Create New Conversation
-app.post("/api/conversations", async (req, res) => {
+apiRouter.post("/conversations", async (req, res) => {
   const { title } = req.body || {};
   const convTitle = title || `Chat ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -598,7 +600,7 @@ app.post("/api/conversations", async (req, res) => {
 });
 
 // 6. Tools Listing
-app.get("/api/tools", (req, res) => {
+apiRouter.get("/tools", (req, res) => {
   const tools = serverRegistry.listTools().map((name) => {
     const t = serverRegistry.getTool(name);
     return {
@@ -611,14 +613,14 @@ app.get("/api/tools", (req, res) => {
 });
 
 // 7. Execute Tool Directly (Interactive Sandbox)
-app.post("/api/tools/execute", (req, res) => {
+apiRouter.post("/tools/execute", (req, res) => {
   const { name, args } = req.body;
   const result = serverRegistry.executeTool(name, args);
   res.json({ tool: name, args, result });
 });
 
 // 8. RAG Search Sandbox
-app.get("/api/rag/search", async (req, res) => {
+apiRouter.get("/rag/search", async (req, res) => {
   const query = req.query.q;
   if (!query) {
     return res.status(400).json({ error: "Query parameter 'q' is required." });
@@ -637,7 +639,7 @@ app.get("/api/rag/search", async (req, res) => {
 });
 
 // 9. Main Chat Endpoint
-app.post("/api/chat", async (req, res) => {
+apiRouter.post("/chat", async (req, res) => {
   const startTime = Date.now();
   const { message, conversationId, title, searchWeb, reasonMode } = req.body;
 
@@ -778,8 +780,53 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n✨ Mark 1 AI API Server running at http://localhost:${PORT}`);
-  console.log(`   Connected to Tool Registry (${serverRegistry.size} tools)`);
-  console.log(`   Active Provider: ${activePrimary} (Fallback: ${activeFallback})\n`);
+// Root endpoint for status / health
+apiRouter.get("/", (req, res) => {
+  res.json({ app: "Mark 1 AI API", status: "Online", version: "1.0.0" });
 });
+
+// URL Normalizer Middleware
+app.use((req, res, next) => {
+  // If Vercel rewrote the URL to /api or /api/index.js, restore the original path
+  if (req.url === "/api/index.js" || req.url === "/api" || req.url === "/api/") {
+    if (req.originalUrl && req.originalUrl !== req.url && req.originalUrl !== "/") {
+      req.url = req.originalUrl;
+    }
+  }
+  next();
+});
+
+// Mount router under BOTH /api and root to handle any rewrite variation
+app.use("/api", apiRouter);
+app.use(apiRouter);
+
+// Catch-all 404 for API requests - always return valid JSON
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: `Not found: ${req.method} ${req.originalUrl || req.url}` });
+});
+
+// Global error handler - always return valid JSON
+app.use((err, req, res, next) => {
+  console.error("API error:", err);
+  res.status(500).json({ error: sanitizeErrorMessage(err?.message || "Internal server error") });
+});
+
+export { app };
+export default app;
+
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith("server.js") ||
+    process.argv[1].endsWith("server") ||
+    (typeof import.meta.url === "string" &&
+      fileURLToPath(import.meta.url) === process.argv[1]));
+
+const isVercel = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+if (!isVercel && isDirectRun) {
+  app.listen(PORT, () => {
+    console.log(`\n✨ Mark 1 AI API Server running at http://localhost:${PORT}`);
+    console.log(`   Connected to Tool Registry (${serverRegistry.size} tools)`);
+    console.log(`   Active Provider: ${activePrimary} (Fallback: ${activeFallback})\n`);
+  });
+}

@@ -64,6 +64,8 @@ export default function App() {
   const fetchStatus = async () => {
     try {
       const res = await fetch("/api/status");
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) return;
       const data = await res.json();
       setSystemStatus(data);
       if (data.primaryProvider === "gemini") {
@@ -80,6 +82,8 @@ export default function App() {
   const fetchConversations = async () => {
     try {
       const res = await fetch("/api/conversations");
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) return;
       const data = await res.json();
       if (data.conversations && data.conversations.length > 0) {
         setConversations(data.conversations);
@@ -95,6 +99,8 @@ export default function App() {
   const fetchTools = async () => {
     try {
       const res = await fetch("/api/tools");
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) return;
       const data = await res.json();
       if (data.tools) setToolsList(data.tools);
     } catch {
@@ -106,6 +112,11 @@ export default function App() {
     setActiveConversationId(id);
     try {
       const res = await fetch(`/api/conversations/${id}/messages`);
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) {
+        setMessages([]);
+        return;
+      }
       const data = await res.json();
       setMessages(data.messages || []);
     } catch {
@@ -183,7 +194,20 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get("content-type") || "";
+      let data;
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const textResp = await res.text();
+        throw new Error(
+          `Server returned HTTP ${res.status}: ${textResp.slice(0, 120).trim()}`
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || `Request failed with status ${res.status}`);
+      }
 
       if (data.stats) {
         setLiveMetrics({
@@ -223,11 +247,19 @@ export default function App() {
         { title: "Waiting for your input...", desc: "Idle", active: false },
       ]);
     } catch (err) {
+      const isLocal =
+        typeof window !== "undefined" &&
+        (window.location.hostname === "localhost" ||
+          window.location.hostname === "127.0.0.1");
+      const localHint = isLocal
+        ? " Check that the local API server is running on port 3001."
+        : "";
+
       setMessages((prev) => [
         ...prev,
         {
           role: "model",
-          content: `Error communicating with backend: ${err.message}. Check that the API server is running on port 3001.`,
+          content: `Error communicating with backend: ${err.message}.${localHint}`,
         },
       ]);
       showToast({
@@ -254,6 +286,8 @@ export default function App() {
           forceFailure: forceFailureOverride,
         }),
       });
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok || !contentType.includes("application/json")) return;
       const data = await res.json();
       setSystemStatus((prev) => ({
         ...prev,

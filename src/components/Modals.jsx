@@ -24,7 +24,13 @@ export default function Modals({
     setRagLoading(true);
     try {
       const res = await fetch(`/api/rag/search?q=${encodeURIComponent(ragQuery)}`);
-      const data = await res.json();
+      const contentType = res.headers.get("content-type") || "";
+      let data;
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
       setRagResults(data);
     } catch (e) {
       setRagResults({ error: e.message });
@@ -49,7 +55,13 @@ export default function Modals({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: selectedTool.name, args: parsedArgs }),
       });
-      const data = await res.json();
+      const contentType = res.headers.get("content-type") || "";
+      let data;
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
       setToolResult(data);
     } catch (e) {
       setToolResult({ error: e.message });

@@ -8,21 +8,28 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 const PLACEHOLDERS = ["your_supabase_url_here", "your_supabase_anon_key_here"];
 
-if (!SUPABASE_URL || PLACEHOLDERS.includes(SUPABASE_URL)) {
-  console.error("❌ Missing SUPABASE_URL. Add it to your .env file.");
-  console.error("   Get it from: https://supabase.com/dashboard → Project Settings → API");
-  process.exit(1);
-}
+const isConfigured = Boolean(
+  SUPABASE_URL &&
+  !PLACEHOLDERS.includes(SUPABASE_URL) &&
+  SUPABASE_ANON_KEY &&
+  !PLACEHOLDERS.includes(SUPABASE_ANON_KEY)
+);
 
-if (!SUPABASE_ANON_KEY || PLACEHOLDERS.includes(SUPABASE_ANON_KEY)) {
-  console.error("❌ Missing SUPABASE_ANON_KEY. Add it to your .env file.");
-  console.error("   Get it from: https://supabase.com/dashboard → Project Settings → API");
-  process.exit(1);
+if (!isConfigured) {
+  if (process.argv[1]?.endsWith("supabase.js")) {
+    console.error("❌ Missing SUPABASE_URL or SUPABASE_ANON_KEY. Add them to your .env file.");
+    console.error("   Get them from: https://supabase.com/dashboard → Project Settings → API");
+    process.exit(1);
+  } else {
+    console.warn("⚠️ Warning: Supabase credentials not configured in environment variables. Falling back to local in-memory storage.");
+  }
 }
 
 // ─── Supabase Client ─────────────────────────────────────────────
 // Credentials are NEVER logged. Only the client is exported.
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+export const supabase = isConfigured
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : createClient("https://placeholder-mark1.supabase.co", "placeholder-anon-key");
 
 // ─── Connection Test ─────────────────────────────────────────────
 // Lightweight query to verify Supabase is reachable.
