@@ -6,6 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
+    "dev": "vite",
+    "build": "vite build",
+    "server": "node server.js",
     "test": "node test.js",
     "test:local": "node test.js local",
     "test:api": "node test.js api",
@@ -29,7 +32,16 @@
   "dependencies": {
     "@google/genai": "^2.18.0",
     "@supabase/supabase-js": "^2.112.3",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "groq-sdk": "^1.6.0"
+    "express": "^5.2.1",
+    "groq-sdk": "^1.6.0",
+    "lucide-react": "^1.43.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.2.2"
   }
 }

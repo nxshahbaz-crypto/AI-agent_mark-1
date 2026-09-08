@@ -80,6 +80,26 @@ export async function createConversation(title) {
   return data;
 }
 
+// ─── updateConversationTitle() ──────────────────────────────────
+// Updates the title of an existing conversation in Supabase.
+export async function updateConversationTitle(conversationId, title) {
+  if (!conversationId || !title) return null;
+
+  const { data, error } = await supabase
+    .from("conversations")
+    .update({ title, updated_at: new Date().toISOString() })
+    .eq("id", conversationId)
+    .select()
+    .single();
+
+  if (error) {
+    console.warn(`  ⚠️ Failed to update conversation title: ${error.message}`);
+    return null;
+  }
+
+  return data;
+}
+
 // ─── saveMessage() ───────────────────────────────────────────────
 // Inserts a single message into the messages table.
 // role must be 'user' or 'model'.

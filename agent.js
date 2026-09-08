@@ -137,15 +137,19 @@ export class Agent {
       }
 
       // Record model's tool calls in working history
-      workingHistory.push({
-        role: "model",
-        parts: stepResponse.toolCalls.map((tc) => ({
+      const modelParts =
+        stepResponse.raw?.candidates?.[0]?.content?.parts ||
+        stepResponse.toolCalls.map((tc) => ({
           functionCall: {
             id: tc.id,
             name: tc.name,
             args: tc.args || {},
           },
-        })),
+        }));
+
+      workingHistory.push({
+        role: "model",
+        parts: modelParts,
       });
 
       const toolResponses = [];
