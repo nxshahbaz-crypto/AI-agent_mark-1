@@ -9,7 +9,7 @@
 //   import { ToolRegistry } from './tool-registry.js';
 //   const registry = new ToolRegistry();
 //   registry.register({ name, description, parameters, execute });
-// ═══════════════════════════════════════════════════════════════════
+import { validateToolArgs } from "./security.js";
 
 export class ToolRegistry {
   constructor() {
@@ -101,13 +101,20 @@ export class ToolRegistry {
 
   // ─── executeTool() ─────────────────────────────────────────────
   // Executes a registered tool by name with the given arguments.
-  // Returns { error } if the tool is not found or crashes.
+  // Validates arguments before execution.
+  // Returns { error } if the tool is not found, validation fails, or it crashes.
   // The agent core calls this without knowing what the tool does.
   executeTool(name, args) {
     const tool = this._tools.get(name);
     if (!tool) {
       return { error: `Unknown tool: ${name}` };
     }
+
+    const validation = this.validateToolArguments(name, args);
+    if (!validation.valid) {
+      return { error: `Validation error for tool "${name}": ${validation.error}` };
+    }
+
     try {
       return tool.execute(args || {});
     } catch (e) {
@@ -116,31 +123,32 @@ export class ToolRegistry {
   }
 
   // ─── validateToolArguments() ───────────────────────────────────
-  // Checks whether the provided args satisfy the tool's required params.
+  // Checks whether the provided args satisfy the tool's parameter schema.
+  // Enforces presence of required keys, data types, string length bounds,
+  // and prototype pollution defense.
   // Returns { valid: true } or { valid: false, error: "..." }.
-  // Does NOT validate types — only checks presence of required keys.
   validateToolArguments(name, args) {
     const tool = this._tools.get(name);
     if (!tool) {
       return { valid: false, error: `Unknown tool: ${name}` };
     }
 
-    const params = tool.parameters;
-    if (!params || !params.required || params.required.length === 0) {
+    // If args is null/undefined and there are required parameters, fail.
+    // If no parameters required, null/undefined defaults to safe empty object.
+    const params = tool.parameters || {};
+    const hasRequired = Array.isArray(params.required) && params.required.length > 0;
+
+    if (args === null || args === undefined) {
+      if (hasRequired) {
+        return {
+          valid: false,
+          error: `Missing required argument(s): ${params.required.join(", ")}`,
+        };
+      }
       return { valid: true };
     }
 
-    const provided = args || {};
-    const missing = params.required.filter((key) => !(key in provided));
-
-    if (missing.length > 0) {
-      return {
-        valid: false,
-        error: `Missing required argument(s): ${missing.join(", ")}`,
-      };
-    }
-
-    return { valid: true };
+    return validateToolArgs(name, params, args);
   }
 
   // ─── clear() ───────────────────────────────────────────────────

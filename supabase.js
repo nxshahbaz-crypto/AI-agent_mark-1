@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
+import { sanitizeErrorMessage } from "./security.js";
 
 // ─── Environment Validation ─────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -51,10 +52,7 @@ export async function testConnection() {
   } catch (err) {
     return {
       ok: false,
-      message: `Cannot reach Supabase: ${err.message}`.replace(
-        SUPABASE_ANON_KEY,
-        "[REDACTED]"
-      ),
+      message: sanitizeErrorMessage(`Cannot reach Supabase: ${err.message}`),
     };
   }
 }

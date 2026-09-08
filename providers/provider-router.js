@@ -93,22 +93,8 @@ export function classifyError(error) {
   return { recoverable: false, reason: "unknown_error" };
 }
 
-/**
- * Sanitizes messages to prevent accidental exposure of API keys in logs or errors.
- */
-export function sanitizeErrorMessage(msg) {
-  if (!msg) return "";
-  let text = typeof msg === "string" ? msg : msg.message || String(msg);
-  if (process.env.GEMINI_API_KEY) {
-    text = text.replaceAll(process.env.GEMINI_API_KEY, "[REDACTED]");
-  }
-  if (process.env.GROQ_API_KEY) {
-    text = text.replaceAll(process.env.GROQ_API_KEY, "[REDACTED]");
-  }
-  return text
-    .replace(/key=[^&\s]+/gi, "key=[REDACTED]")
-    .replace(/bearer\s+[\w\-._~+/]+=*/gi, "Bearer [REDACTED]");
-}
+import { sanitizeErrorMessage } from "../security.js";
+export { sanitizeErrorMessage };
 
 /**
  * Structured observability logger.

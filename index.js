@@ -17,6 +17,7 @@ import { buildContext, estimateTokens } from "./context-manager.js";
 import { createDefaultRouter, sanitizeErrorMessage } from "./providers/provider-router.js";
 import { Agent } from "./agent.js";
 import { retrieveKnowledge, formatAugmentedPrompt } from "./rag/index.js";
+import { validateUserInput } from "./security.js";
 
 // ─── Configuration Validation ───────────────────────────────────
 // Primary provider key is required; fallback key is optional unless invoked.
@@ -83,7 +84,7 @@ function persistMessage(role, content) {
 // ─── Main Chat Loop ─────────────────────────────────────────────
 async function main() {
   console.log("╔══════════════════════════════════════════════════════════╗");
-  console.log("║   🤖  Atlas AI  —  Phase 6 (Multi-Step Planning)         ║");
+  console.log("║   🤖  Atlas AI  —  Phase 8 (Security + Evaluation)       ║");
   console.log(`║   Primary: ${primaryProvider.padEnd(10)} Fallback: ${fallbackProvider.padEnd(23)}║`);
   console.log("║   Type your message and press Enter.                     ║");
   console.log("║   Type 'exit' to quit.                                   ║");
@@ -131,15 +132,17 @@ async function main() {
       break;
     }
 
-    // Reject empty or whitespace-only input
-    if (!userInput.trim()) {
-      console.log("⚠️  Please type a message.\n");
+    // Validate user input with security limits
+    const inputValidation = validateUserInput(userInput);
+    if (!inputValidation.valid) {
+      console.log(`⚠️  ${inputValidation.error}\n`);
       continue;
     }
+    const safeInput = inputValidation.sanitized;
 
     try {
       // Estimate tokens for the new message to reserve budget
-      const userMsgTokens = estimateTokens({ role: "user", parts: [{ text: userInput }] });
+      const userMsgTokens = estimateTokens({ role: "user", parts: [{ text: safeInput }] });
       const availableBudget = Math.max(0, MAX_CONTEXT_TOKENS - userMsgTokens);
 
       // Manage context budget (applies equally to Gemini and Groq)
@@ -150,15 +153,15 @@ async function main() {
       );
 
       // Retrieve knowledge context if RAG is enabled
-      let agentPrompt = userInput;
+      let agentPrompt = safeInput;
       let retrievedChunks = [];
 
       if (RAG_ENABLED) {
         try {
-          const ragResult = await retrieveKnowledge(userInput);
+          const ragResult = await retrieveKnowledge(safeInput);
           if (ragResult && ragResult.chunks && ragResult.chunks.length > 0) {
             retrievedChunks = ragResult.chunks;
-            agentPrompt = formatAugmentedPrompt(userInput, retrievedChunks);
+            agentPrompt = formatAugmentedPrompt(safeInput, retrievedChunks);
             console.log(
               `  📚 RAG: ${retrievedChunks.length} chunk(s) retrieved | ~${ragResult.tokenEstimate} tokens | Top match: ${(retrievedChunks[0].similarity * 100).toFixed(1)}%`
             );
@@ -178,12 +181,12 @@ async function main() {
 
       // Append both user and model messages to in-memory history
       conversationHistory.push(
-        { role: "user", parts: [{ text: userInput }] },
+        { role: "user", parts: [{ text: safeInput }] },
         { role: "model", parts: [{ text: replyText }] }
       );
 
       // Persist both messages to Supabase (non-blocking)
-      persistMessage("user", userInput);
+      persistMessage("user", safeInput);
       persistMessage("model", replyText);
 
       console.log(`\nAtlas: ${replyText}\n`);

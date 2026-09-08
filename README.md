@@ -21,6 +21,13 @@ A modular, production-style AI agent built from scratch using **Node.js**, **Goo
 
 - **Interactive CLI Interface:** Multi-turn conversation loop in the terminal.
 - **Sliding-Window Memory:** Configurable history window (`MAX_TURNS`) to preserve context efficiently.
+- **Security & Evaluation (Phase 8):**
+  - **Input Validation & Size Limits:** Rejects oversized user inputs (`MAX_INPUT_LENGTH = 4000`), null/undefined inputs, and strips dangerous null bytes.
+  - **Tool Argument Validation & Security:** Strict parameter schema type validation (`string`, `number`, `boolean`, `object`, `array`), bounds on tool arguments (`MAX_TOOL_ARG_LENGTH = 1000`), prototype pollution prevention (`__proto__`, `constructor`, `prototype`), and math expression size bounds with exponential operator bans (`**`).
+  - **RAG Prompt Injection Defense:** Retrieved chunks are sanitized to defang delimiter spoofing (`[End Knowledge Base Information]`) and neutralize direct instruction overrides (`IGNORE ALL PREVIOUS INSTRUCTIONS`, `SYSTEM OVERRIDE:`). Chunks are framed in authoritative untrusted-data boundaries reminding the model that system instructions take absolute precedence.
+  - **Excessive Steps & Tool Loop Prevention:** Enforces hard limits on planning steps (`MAX_AGENT_STEPS_LIMIT = 10`) and total tool executions per turn (`MAX_TOTAL_TOOL_CALLS = 10`).
+  - **Safe Error Handling & Secret Redaction:** Comprehensive masking of Google Gemini keys (`AIza...`), Groq keys (`gsk_...`), Supabase keys (`sbp_...`, JWTs), Bearer tokens, URLs with embedded credentials, and database connection strings.
+  - **Deterministic Zero-Quota Evaluation Suite:** 71 mock tests validating normal chat, tool calling, multi-step workflows, provider fallback, RAG retrieval, irrelevant RAG queries, and all security defenses with 0 external API calls consumed.
 - **RAG / Knowledge Base (Phase 7):**
   - **Vector Similarity Search:** Stores chunks and 768-dimensional embeddings in Supabase using `pgvector` and HNSW indexing.
   - **Current Embedding Model:** Uses Google's `gemini-embedding-2` model configured with `outputDimensionality: 768`.
@@ -91,6 +98,7 @@ ai-agent-practice/
 ├── ingest.js                 # CLI utility to ingest files into the knowledge base (Phase 7)
 ├── package.json              # Node.js dependencies and run scripts
 ├── schema.sql                # SQL schema for Supabase (conversations, messages, pgvector knowledge_chunks)
+├── security.js               # Phase 8 security module (input limits, arg validation, sanitization)
 ├── supabase.js               # Supabase client, connection probe, and persistence functions
 ├── context-manager.js        # Smart history selection, token budgeting, and truncation
 ├── tool-registry.js          # ToolRegistry class with Gemini and OpenAI tool definitions
@@ -111,6 +119,7 @@ ai-agent-practice/
 ├── test-providers.js         # Provider abstraction & failover tests (mocked, 0 API quota)
 ├── test-agent.js             # Multi-step agent planning unit tests (mocked, 0 API quota)
 ├── test-rag.js               # RAG / Knowledge Base unit tests (mocked, 0 API quota)
+├── test-evaluation.js        # Phase 8 comprehensive security + evaluation suite (mocked, 0 quota)
 ├── test-supabase-memory.js   # Supabase persistent memory integration tests
 └── apply-schema.js           # Schema status checker for Supabase
 ```
@@ -256,6 +265,86 @@ Atlas AI uses two Supabase tables for persistent conversation memory:
 
 ### Setup
 Run the `schema.sql` file in your Supabase SQL Editor to create all tables, policies, vector extensions, indexes, and stored procedures.
+
+---
+
+## 🛡️ Security & Evaluation (Phase 8)
+
+Atlas AI implements practical, hackathon-ready security controls and a comprehensive, deterministic evaluation suite running with **zero API quota consumed**.
+
+### Security Architecture
+
+```mermaid
+graph TD
+    UI["Raw User Input"] --> IV["Input Validation (MAX_INPUT_LENGTH: 4000, null bytes)"]
+    IV --> Agent["Agent Loop (agent.js)"]
+    Agent --> RAG["RAG Retrieval"]
+    RAG --> PI["Prompt Injection Defense (Defang Delimiters & Inert Text)"]
+    PI --> LLM["Provider Router (Gemini / Groq)"]
+    LLM --> TR["Tool Registry (tool-registry.js)"]
+    TR --> TV["Tool Argument Validation (Types, Prototype Pollution, Bounds)"]
+    TV --> TE["Tool Execution (calculator / weather / time)"]
+    TE --> CM["Context Manager (Payload Truncation & Token Budget)"]
+    Agent --> ERR["Safe Error Handling (sanitizeErrorMessage - All Secrets Masked)"]
+
+    style UI fill:#2d2d2d,stroke:#4fc3f7,color:#fff
+    style IV fill:#1a1a2e,stroke:#00e676,color:#fff
+    style PI fill:#1a1a2e,stroke:#ff9100,color:#fff
+    style TV fill:#1a1a2e,stroke:#00e676,color:#fff
+    style ERR fill:#1a1a2e,stroke:#e94560,color:#fff
+```
+
+### The 5 Security Pillars
+
+1. **Input Validation and Size Limits (`validateUserInput`):**
+   - Strictly enforces character length bounds (`MAX_INPUT_LENGTH = 4000`).
+   - Rejects non-string types, empty inputs, and whitespace-only submissions.
+   - Automatically sanitizes hazardous null byte characters (`\0`).
+
+2. **Tool Argument Validation & Prototype Pollution Defense (`validateToolArgs`):**
+   - Validates argument types against the tool schema (`string`, `number`, `boolean`, `object`, `array`).
+   - Bounds individual string arguments (`MAX_TOOL_ARG_LENGTH = 1000`).
+   - Prohibits prototype pollution attacks (`__proto__`, `constructor`, `prototype`) and unauthorized prototype inheritance modifications.
+   - Restricts calculator expressions (max 200 characters, no `**` exponentiation) and city inputs (max 100 characters).
+
+3. **RAG Prompt Injection Defense (`sanitizeKnowledgeChunk` & `formatKnowledgeContext`):**
+   - Neutralizes fake delimiter injection (e.g. `[End Knowledge Base Information]`, `</knowledge_context>`).
+   - Defangs direct instruction override commands (`IGNORE ALL PREVIOUS INSTRUCTIONS`, `SYSTEM OVERRIDE:`, `disregard all prior instructions`) into inert quoted text.
+   - Frames all retrieved external content in explicit untrusted data markers with authoritative system directives commanding the model that system instructions take absolute precedence.
+
+4. **Excessive Tool & Agent Step Protection (`agent.js`):**
+   - Automatically bounds planning steps to a hard ceiling (`MAX_AGENT_STEPS_LIMIT = 10`), preventing runaway execution.
+   - Enforces a turn-level tool execution ceiling (`MAX_TOTAL_TOOL_CALLS = 10`) across parallel and sequential turns.
+   - Immediately halts execution upon unrecoverable tool errors or prototype violations.
+
+5. **Safe Error Handling & Secret Masking (`sanitizeErrorMessage`):**
+   - Centralized redaction scans and replaces sensitive keys: `GEMINI_API_KEY`, `GROQ_API_KEY`, `SUPABASE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+   - Pattern-based redaction for Google API keys (`AIza...`), Groq keys (`gsk_...`), Supabase tokens (`sbp_...`, JWTs), Bearer authorization headers, URLs with embedded basic authentication, and PostgreSQL connection passwords.
+
+---
+
+### 🎯 Zero-Quota Evaluation Suite (`test-evaluation.js`)
+
+Atlas AI includes a 71-test deterministic evaluation test suite that consumes **ZERO API quota** (0 Gemini, 0 Groq, 0 Supabase).
+
+| Evaluation Category | Test Scenarios Evaluated |
+|---------------------|--------------------------|
+| **1. Normal Chat** | Conversational inquiries, persona adherence, 1-step completion, 0 tool calls. |
+| **2. Tool Calling** | Single-step tool calls, schema validation, safe execution, and answer synthesis. |
+| **3. Multi-Step Workflow** | Multi-tool sequential dependencies (weather → calculator Fahrenheit conversion). |
+| **4. Provider Fallback** | Recoverable primary errors (`429` rate limits, `503`) trigger seamless Groq failover. |
+| **5. RAG Retrieval** | Vector matching above threshold, source attribution, and grounded synthesis. |
+| **6. Irrelevant RAG Query** | Below-threshold queries produce empty context; agent degrades gracefully without hallucination. |
+| **7. Input Size Limits** | Rejection of oversized prompts (>4000 chars), null bytes, and empty inputs. |
+| **8. Tool Security** | Type checking, missing required keys, prototype pollution, and expression bounds. |
+| **9. Prompt Injection** | Delimiter spoofing neutralization, instruction override defanging, untrusted framing. |
+| **10. Excessive Steps** | Clamping runaway `maxSteps` requests and capping total tool calls per turn. |
+| **11. Secret Redaction** | Redaction of API keys, JWTs, Bearer tokens, and database passwords in error messages. |
+
+To run the evaluation suite:
+```bash
+npm run test:eval
+```
 
 ---
 
@@ -577,6 +666,12 @@ Validates chunking boundaries, 768-dimensional embeddings, ingestion, top-k vect
 npm run test:rag
 ```
 
+### Run Phase 8 Evaluation & Security Suite (Zero API Calls)
+Validates normal chat, tool calling, multi-step workflows, provider fallback, RAG retrieval, irrelevant RAG queries, input validation, tool schema security, prompt injection defense, step ceilings, and secret redaction:
+```bash
+npm run test:eval
+```
+
 ### Run Supabase Connection Test
 Verifies environment variables and tests connectivity to Supabase:
 ```bash
@@ -615,15 +710,19 @@ npm test
 - [x] **Phase 5.5: AI Provider Abstraction + Gemini → Groq Failover** — Decoupled provider layer, automatic failover on recoverable errors (429, 5xx, timeouts), Groq fallback support, zero quota mock test suite.
 - [x] **Phase 6: Multi-Step Agent Planning** — Autonomous multi-step orchestration loop, parallel and sequential/dependent tool calling, max step limit (5), unrecoverable error halting, and mid-task provider failover.
 - [x] **Phase 7: RAG / Knowledge Base** — Supabase pgvector storage, gemini-embedding-2 (768 dims), boundary-aware chunking, top-k vector retrieval, similarity thresholding, context limit safeguards, and ingestion CLI.
-- [ ] **Phase 8: Production Deployment & Web UI** — Web interface and serverless deployment.
+- [x] **Phase 8: Security + Evaluation** — Practical hackathon-ready security controls (input validation, tool argument security, prototype pollution defense, RAG prompt injection neutralization, step ceilings & loop prevention, secret redaction) and a 71-test deterministic zero-quota evaluation suite.
 
 ---
 
 ## 🔒 Security Notes
 
-- All errors caught during API requests mask sensitive strings like `GEMINI_API_KEY` and `GROQ_API_KEY` before printing to terminal output.
-- Expression inputs to the calculator tool are sanitized against a whitelist regex to prevent code execution vulnerabilities.
-- Supabase Row Level Security (RLS) policies are enforced on database tables.
-- Persistence errors never crash the agent — they are caught and logged as warnings.
-- Tool execution is wrapped in try/catch — a crashing tool never brings down the agent.
+- **Input Validation:** User input is strictly length-bounded (`MAX_INPUT_LENGTH = 4000`) and sanitized against dangerous null byte characters.
+- **Tool Parameter Security:** Tool arguments undergo strict schema type validation and string length bounding (`MAX_TOOL_ARG_LENGTH = 1000`).
+- **Prototype Pollution Defense:** Argument keys matching `__proto__`, `constructor`, or `prototype`, as well as prototype modifications, are blocked immediately.
+- **Calculator Hardening:** Expressions are capped at 200 characters, restricted to arithmetic characters, and explicitly disallow power operator exponentiation (`**`).
+- **Prompt Injection Neutralization:** Retrieved RAG chunks are stripped of delimiter-breaking markers and direct instruction override commands before being framed in untrusted-context boundaries.
+- **Step & Tool Ceilings:** Planning steps are clamped to a hard ceiling (`MAX_AGENT_STEPS_LIMIT = 10`) and total tool executions are capped (`MAX_TOTAL_TOOL_CALLS = 10`) to prevent runaway loops.
+- **Secret Redaction:** All errors and logs mask sensitive API keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, `SUPABASE_KEY`), JWTs, Bearer tokens, URLs with credentials, and database connection strings before display.
+- **Database Security:** Supabase Row Level Security (RLS) policies are enforced on database tables.
+- **Graceful Fault Tolerance:** Persistence errors and tool crashes never bring down the agent.
 

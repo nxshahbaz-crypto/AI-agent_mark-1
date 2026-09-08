@@ -13,15 +13,20 @@ import {
   MAX_OUTPUT_TOKENS,
   MAX_TOOL_PAYLOAD_SIZE,
   SYSTEM_INSTRUCTION,
+  MAX_AGENT_STEPS_LIMIT,
+  MAX_TOTAL_TOOL_CALLS,
 } from "./config.js";
 import { truncatePayload } from "./context-manager.js";
+import { sanitizeErrorMessage, validateUserInput } from "./security.js";
 
 export class Agent {
   /**
    * @param {object} options
    * @param {object} options.router - ProviderRouter instance
    * @param {object} options.registry - ToolRegistry instance
-   * @param {number} [options.maxSteps] - Maximum steps per turn (default: 5)
+   * @param {number} [options.maxSteps] - Maximum steps per turn (default: 5, capped by limit)
+   * @param {number} [options.maxStepsLimit] - Hard ceiling for max steps (default: 10)
+   * @param {number} [options.maxTotalToolCalls] - Hard ceiling for total tool executions (default: 10)
    * @param {string} [options.systemInstruction] - System prompt
    * @param {number} [options.maxOutputTokens] - Token generation limit
    * @param {number} [options.maxToolPayloadSize] - Tool payload truncate limit
@@ -29,7 +34,11 @@ export class Agent {
   constructor(options = {}) {
     this.router = options.router;
     this.registry = options.registry;
-    this.maxSteps = options.maxSteps || MAX_AGENT_STEPS || 5;
+    const requestedSteps = options.maxSteps !== undefined ? options.maxSteps : (MAX_AGENT_STEPS || 5);
+    const stepLimit = options.maxStepsLimit || MAX_AGENT_STEPS_LIMIT || 10;
+    // Security: Bound maxSteps between 1 and stepLimit
+    this.maxSteps = Math.min(Math.max(1, requestedSteps), stepLimit);
+    this.maxTotalToolCalls = options.maxTotalToolCalls || MAX_TOTAL_TOOL_CALLS || 10;
     this.systemInstruction = options.systemInstruction || SYSTEM_INSTRUCTION;
     this.maxOutputTokens = options.maxOutputTokens || MAX_OUTPUT_TOKENS;
     this.maxToolPayloadSize = options.maxToolPayloadSize || MAX_TOOL_PAYLOAD_SIZE;
@@ -46,6 +55,22 @@ export class Agent {
   async run({ message, history = [] }) {
     if (!this.router) {
       throw new Error("Agent cannot run without a ProviderRouter instance.");
+    }
+
+    // Security: Validate user input if message is a raw string
+    if (typeof message === "string") {
+      const inputCheck = validateUserInput(message);
+      if (!inputCheck.valid) {
+        return {
+          text: `Input validation failed: ${inputCheck.error}`,
+          steps: 0,
+          toolCalls: [],
+          stepsDetails: [],
+          provider: "none",
+          fallback: false,
+          error: inputCheck.error,
+        };
+      }
     }
 
     const workingHistory = [...history];
@@ -128,6 +153,12 @@ export class Agent {
       let unrecoverableErrorMessage = "";
 
       for (const tc of stepResponse.toolCalls) {
+        // Prevent excessive tool calls across the plan
+        if (allToolsUsed.length >= this.maxTotalToolCalls) {
+          console.warn(`  ⚠️ Maximum total tool calls limit (${this.maxTotalToolCalls}) reached. Stopping further tool calls.`);
+          break;
+        }
+
         allToolsUsed.push(tc.name);
         console.log(`  🔧 Tool call: ${tc.name}(${JSON.stringify(tc.args || {})})`);
 
@@ -140,11 +171,15 @@ export class Agent {
           rawResult &&
           (rawResult.unrecoverable ||
             rawResult.fatal ||
-            (rawResult.error && rawResult.error.startsWith("Unknown tool:")))
+            (rawResult.error && (
+              rawResult.error.startsWith("Unknown tool:") ||
+              rawResult.error.includes("prototype pollution") ||
+              rawResult.error.includes("Security violation")
+            )))
         ) {
           hasUnrecoverableError = true;
-          unrecoverableErrorMessage = rawResult.error;
-          console.error(`  ❌ [Unrecoverable Error] ${tc.name}: ${rawResult.error}. Halting plan.`);
+          unrecoverableErrorMessage = sanitizeErrorMessage(rawResult.error);
+          console.error(`  ❌ [Unrecoverable Error] ${tc.name}: ${unrecoverableErrorMessage}. Halting plan.`);
           break;
         }
 
@@ -188,9 +223,10 @@ export class Agent {
         fallback: stepResponse.fallback || false,
       });
 
-      // Check if max steps reached
-      if (step >= this.maxSteps) {
-        console.warn(`  ⚠️ Maximum step limit (${this.maxSteps}) reached. Halting tool execution.`);
+      // Check if max steps or max total tool calls reached
+      if (step >= this.maxSteps || allToolsUsed.length >= this.maxTotalToolCalls) {
+        const limitReason = step >= this.maxSteps ? `step limit (${this.maxSteps})` : `tool calls limit (${this.maxTotalToolCalls})`;
+        console.warn(`  ⚠️ Maximum ${limitReason} reached. Halting tool execution.`);
 
         // Append final tool responses to history
         workingHistory.push({

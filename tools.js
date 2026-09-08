@@ -36,9 +36,17 @@ registry.register({
     if (!expression || typeof expression !== "string") {
       return { error: "Invalid input. Provide a math expression as a string." };
     }
+    // Security: Bound expression length to prevent CPU exhaustion
+    if (expression.length > 200) {
+      return { error: "Expression exceeds maximum allowed length of 200 characters." };
+    }
     // Sanitize: only allow digits, operators, whitespace, parens, decimal points
     if (!/^[\d\s+\-*/().%]+$/.test(expression)) {
       return { error: `Unsafe expression: "${expression}". Only basic arithmetic is allowed.` };
+    }
+    // Disallow power exponentiation operator (**)
+    if (/\*\*/.test(expression)) {
+      return { error: "Exponentiation (**) is not allowed for security reasons." };
     }
     try {
       const result = Function(`"use strict"; return (${expression})`)();
@@ -88,9 +96,17 @@ registry.register({
     if (!city || typeof city !== "string") {
       return { error: "Please provide a valid city name." };
     }
+    // Security: Bound city length and sanitize control characters
+    if (city.length > 100) {
+      return { error: "City name exceeds maximum allowed length of 100 characters." };
+    }
+    const cleanCity = city.replace(/[\0\r\n\t]/g, " ").trim();
+    if (!cleanCity) {
+      return { error: "Please provide a valid non-empty city name." };
+    }
     // Mock data — clearly labelled as simulated
     return {
-      city,
+      city: cleanCity,
       temperature: "28°C",
       condition: "Partly cloudy",
       humidity: "65%",

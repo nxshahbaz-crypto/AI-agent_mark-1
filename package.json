@@ -1,7 +1,7 @@
 {
   "name": "ai-agent-practice",
   "version": "1.0.0",
-  "description": "AI Agent practice project - Phase 5: Smart Context + Token Management",
+  "description": "AI Agent practice project - Phase 8: Security + Evaluation",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -15,7 +15,9 @@
     "test:context": "node test-context.js",
     "test:providers": "node test-providers.js",
     "test:agent": "node test-agent.js",
-    "test:rag": "node test-rag.js"
+    "test:rag": "node test-rag.js",
+    "test:eval": "node test-evaluation.js",
+    "test:evaluation": "node test-evaluation.js"
   },
   "keywords": [
     "ai",
